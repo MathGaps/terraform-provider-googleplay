@@ -18,7 +18,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -37,10 +36,6 @@ type Server struct {
 	apps     map[string]*app
 	requests []string
 	nextEdit int
-
-	// UsersPageSize, when positive, makes users.list return pages of that
-	// size.
-	UsersPageSize int
 }
 
 type app struct {
@@ -105,6 +100,14 @@ func (s *Server) Tracks(packageName string) []string {
 	defer s.mu.Unlock()
 
 	return slices.Clone(s.apps[packageName].tracks)
+}
+
+// PutTesters sets the Google Groups of a track as if in Play Console.
+func (s *Server) PutTesters(packageName, track string, groups ...string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.apps[packageName].testers[track] = slices.Clone(groups)
 }
 
 // Testers returns the committed Google Groups of a track.
@@ -392,33 +395,23 @@ func (s *Server) routeDeveloper(r *http.Request, parts []string, body []byte) (a
 	return nil, notFound("unknown path %s %s", r.Method, r.URL.Path)
 }
 
+// listUsers returns every user in one response. Like the real API it refuses
+// to page: the request must carry pageSize=-1 and no page token.
 func (s *Server) listUsers(r *http.Request) (any, *apiError) {
+	query := r.URL.Query()
+	if query.Get("pageSize") != "-1" || query.Get("pageToken") != "" {
+		return nil, badRequest("Pagination is not supported: pageSize must be -1.")
+	}
+
 	emails := make([]string, 0, len(s.users))
 	for email := range s.users {
 		emails = append(emails, email)
 	}
 	slices.Sort(emails)
 
-	start := 0
-	if token := r.URL.Query().Get("pageToken"); token != "" {
-		parsed, err := strconv.Atoi(token)
-		if err != nil || parsed < 0 || parsed > len(emails) {
-			return nil, badRequest("invalid page token")
-		}
-		start = parsed
-	}
-
-	end := len(emails)
-	if s.UsersPageSize > 0 {
-		end = min(start+s.UsersPageSize, len(emails))
-	}
-
 	resp := &androidpublisher.ListUsersResponse{}
-	for _, email := range emails[start:end] {
+	for _, email := range emails {
 		resp.Users = append(resp.Users, clone(s.users[email]))
-	}
-	if end < len(emails) {
-		resp.NextPageToken = strconv.Itoa(end)
 	}
 
 	return resp, nil

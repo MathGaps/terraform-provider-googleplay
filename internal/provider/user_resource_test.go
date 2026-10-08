@@ -6,6 +6,7 @@ package provider
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"slices"
 	"testing"
 
@@ -16,8 +17,6 @@ import (
 
 func TestUserResource_lifecycle(t *testing.T) {
 	fake := newUnitFake(t)
-	// A page size of one makes every lookup page through the whole list.
-	fake.UsersPageSize = 1
 	for _, email := range []string{"aaa@example.com", "zzz@example.com"} {
 		fake.PutUser(&androidpublisher.User{Email: email, Name: "developers/" + unitDeveloperID + "/users/" + email})
 	}
@@ -47,8 +46,10 @@ resource "googleplay_user" "test" {
 					resource.TestCheckResourceAttr(name, "developer_account_permissions.#", "2"),
 					resource.TestCheckNoResourceAttr(name, "expiration_time"),
 					func(*terraform.State) error {
-						if len(requestsMatching(fake, `^GET .*/users\?.*pageToken=`)) == 0 {
-							return fmt.Errorf("the user list was not paged")
+						// The list cannot be paged: every read asks for all users.
+						if lists := requestsMatching(fake, `^GET .*/users\?`); len(lists) == 0 ||
+							len(requestsMatching(fake, `^GET .*/users\?.*pageSize=-1`)) != len(lists) {
+							return fmt.Errorf("user lists must send pageSize=-1: %v", lists)
 						}
 
 						return nil
@@ -198,6 +199,120 @@ resource "googleplay_user" "test" {
 
 					return nil
 				},
+			},
+		},
+	})
+}
+
+// The import-first flow of an account that already has users, grants and
+// tester groups: each is imported by its id and the matching configuration
+// plans nothing and writes nothing.
+func TestImportExistingAccount(t *testing.T) {
+	fake := newUnitFake(t)
+
+	for i := range 10 {
+		email := fmt.Sprintf("colleague%d@example.com", i)
+		fake.PutUser(&androidpublisher.User{
+			Email:       email,
+			Name:        "developers/" + unitDeveloperID + "/users/" + email,
+			AccessState: "ACCESS_GRANTED",
+		})
+	}
+	fake.PutUser(&androidpublisher.User{
+		// Play Console keeps the capitalisation the user was invited with.
+		Email:                       "Ada@Example.com",
+		Name:                        "developers/" + unitDeveloperID + "/users/Ada@Example.com",
+		AccessState:                 "ACCESS_GRANTED",
+		DeveloperAccountPermissions: []string{"CAN_VIEW_APP_QUALITY_GLOBAL", "CAN_REPLY_TO_REVIEWS_GLOBAL"},
+		ExpirationTime:              "2099-06-30T12:00:00Z",
+		Grants: []*androidpublisher.Grant{
+			{
+				Name:                "developers/" + unitDeveloperID + "/users/Ada@Example.com/grants/com.example.other",
+				PackageName:         "com.example.other",
+				AppLevelPermissions: []string{"CAN_MANAGE_PERMISSIONS"},
+			},
+			{
+				Name:                "developers/" + unitDeveloperID + "/users/Ada@Example.com/grants/" + unitPackage,
+				PackageName:         unitPackage,
+				AppLevelPermissions: []string{"CAN_MANAGE_TRACK_APKS", "CAN_VIEW_NON_FINANCIAL_DATA"},
+			},
+		},
+	})
+	// A user with nothing account-wide, only grants.
+	fake.PutUser(&androidpublisher.User{
+		Email:       "grants-only@example.com",
+		Name:        "developers/" + unitDeveloperID + "/users/grants-only@example.com",
+		AccessState: "INVITED",
+	})
+	fake.PutTesters(unitPackage, "internal", "team@example.com", "qa@example.com")
+
+	config := fmt.Sprintf(`
+resource "googleplay_user" "ada" {
+  email                         = "ada@example.com"
+  developer_account_permissions = ["CAN_REPLY_TO_REVIEWS_GLOBAL", "CAN_VIEW_APP_QUALITY_GLOBAL"]
+  expiration_time               = "2099-06-30T12:00:00Z"
+}
+
+resource "googleplay_user" "grants_only" {
+  email = "grants-only@example.com"
+}
+
+resource "googleplay_app_grant" "ada" {
+  email                 = googleplay_user.ada.email
+  package_name          = %[1]q
+  app_level_permissions = ["CAN_VIEW_NON_FINANCIAL_DATA", "CAN_MANAGE_TRACK_APKS"]
+}
+
+resource "googleplay_track_testers" "internal" {
+  package_name  = %[1]q
+  track         = "internal"
+  google_groups = ["qa@example.com", "team@example.com"]
+}`, unitPackage)
+
+	importStep := func(name, id string) resource.TestStep {
+		return resource.TestStep{
+			Config:             config,
+			ResourceName:       name,
+			ImportState:        true,
+			ImportStateId:      id,
+			ImportStatePersist: true,
+		}
+	}
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []resource.TestStep{
+			importStep("googleplay_user.ada", "ada@example.com"),
+			importStep("googleplay_user.grants_only", "grants-only@example.com"),
+			importStep("googleplay_app_grant.ada", "ada@example.com/"+unitPackage),
+			importStep("googleplay_track_testers.internal", unitPackage+"/internal"),
+			{
+				Config:   config,
+				PlanOnly: true,
+			},
+			{
+				Config: config,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("googleplay_user.ada", "email", "ada@example.com"),
+					resource.TestCheckResourceAttr("googleplay_user.ada", "access_state", "ACCESS_GRANTED"),
+					resource.TestCheckNoResourceAttr("googleplay_user.grants_only", "developer_account_permissions"),
+					resource.TestCheckResourceAttr("googleplay_app_grant.ada", "app_level_permissions.#", "2"),
+					resource.TestCheckResourceAttr("googleplay_track_testers.internal", "google_groups.#", "2"),
+					func(*terraform.State) error {
+						// An edit is opened and deleted to read testers; nothing
+						// else may have been written, and no edit committed.
+						for _, request := range requestsMatching(fake, `^(POST|PATCH|PUT|DELETE) `) {
+							if !regexp.MustCompile(`^(POST .*/edits\?|DELETE .*/edits/[^/:?]+\?)`).MatchString(request) {
+								return fmt.Errorf("importing wrote to the API: %s", request)
+							}
+						}
+						if open := fake.OpenEdits(unitPackage); open != 0 {
+							return fmt.Errorf("%d edits were left open", open)
+						}
+
+						return nil
+					},
+				),
 			},
 		},
 	})

@@ -83,7 +83,8 @@ func (r *userResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 			"across the whole account. Per-app permissions are `googleplay_app_grant` resources.\n\n" +
 			"Creating the resource invites the address; destroying it removes all of the user's access to the " +
 			"developer account, including every per-app grant.\n\n" +
-			"The API has no call that reads one user, so every read lists the account's users. " +
+			"The API has no call that reads one user, and its list cannot be paged, so every read fetches all " +
+			"of the account's users in one request. " +
 			"Requires the provider's `developer_id`.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
@@ -166,6 +167,17 @@ func flattenUser(user *androidpublisher.User, prior userModel, diags *diag.Diagn
 	return model
 }
 
+// userName is the resource name to address the user by. The name the API
+// reported is preferred: it carries the address exactly as Play Console holds
+// it, which may differ in case from the configured one.
+func (r *userResource) userName(state userModel) (string, error) {
+	if name := state.Name.ValueString(); name != "" {
+		return name, nil
+	}
+
+	return r.client.UserName(state.Email.ValueString())
+}
+
 func (r *userResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan userModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
@@ -243,7 +255,7 @@ func (r *userResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		return
 	}
 
-	name, err := r.client.UserName(state.Email.ValueString())
+	name, err := r.userName(state)
 	if err != nil {
 		addAPIError(&resp.Diagnostics, "Unable to update the user", err)
 
@@ -305,7 +317,7 @@ func (r *userResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 		return
 	}
 
-	name, err := r.client.UserName(state.Email.ValueString())
+	name, err := r.userName(state)
 	if err != nil {
 		addAPIError(&resp.Diagnostics, "Unable to delete the user", err)
 

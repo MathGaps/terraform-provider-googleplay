@@ -73,7 +73,8 @@ func (r *appGrantResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 	resp.Schema = schema.Schema{
 		MarkdownDescription: "The permissions one user of the developer account holds on one app. " +
 			"The user must already be in the account: declare it with `googleplay_user` and refer to its `email`.\n\n" +
-			"The API has no call that reads one grant, so every read lists the account's users. " +
+			"The API has no call that reads one grant, and its user list cannot be paged, so every read fetches " +
+			"all of the account's users in one request. " +
 			"Requires the provider's `developer_id`.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
@@ -159,6 +160,16 @@ func (r *appGrantResource) refresh(ctx context.Context, model *appGrantModel) (b
 	return true, nil
 }
 
+// grantName is the resource name to address the grant by, preferring the one
+// the API reported, as userResource.userName does.
+func (r *appGrantResource) grantName(state appGrantModel) (string, error) {
+	if name := state.Name.ValueString(); name != "" {
+		return name, nil
+	}
+
+	return r.client.GrantName(state.Email.ValueString(), state.PackageName.ValueString())
+}
+
 func (r *appGrantResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan appGrantModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
@@ -166,11 +177,30 @@ func (r *appGrantResource) Create(ctx context.Context, req resource.CreateReques
 		return
 	}
 
-	parent, err := r.client.UserName(plan.Email.ValueString())
+	// Address the user by the name the API holds, which may differ in case
+	// from the configured address, and say so plainly when there is no such
+	// user rather than passing on the API's less direct error.
+	user, err := r.client.FindUser(ctx, plan.Email.ValueString())
 	if err != nil {
 		addAPIError(&resp.Diagnostics, "Unable to create the app grant", err)
 
 		return
+	}
+	if user == nil {
+		resp.Diagnostics.AddAttributeError(path.Root("email"), "User not found",
+			plan.Email.ValueString()+" is not a user of the developer account. Declare it with a googleplay_user "+
+				"resource and refer to that resource's email, so that the user is created first.")
+
+		return
+	}
+
+	parent := user.Name
+	if parent == "" {
+		if parent, err = r.client.UserName(plan.Email.ValueString()); err != nil {
+			addAPIError(&resp.Diagnostics, "Unable to create the app grant", err)
+
+			return
+		}
 	}
 
 	grant := &androidpublisher.Grant{
@@ -226,13 +256,14 @@ func (r *appGrantResource) Read(ctx context.Context, req resource.ReadRequest, r
 }
 
 func (r *appGrantResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var plan appGrantModel
+	var plan, state appGrantModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	name, err := r.client.GrantName(plan.Email.ValueString(), plan.PackageName.ValueString())
+	name, err := r.grantName(state)
 	if err != nil {
 		addAPIError(&resp.Diagnostics, "Unable to update the app grant", err)
 
@@ -275,7 +306,7 @@ func (r *appGrantResource) Delete(ctx context.Context, req resource.DeleteReques
 		return
 	}
 
-	name, err := r.client.GrantName(state.Email.ValueString(), state.PackageName.ValueString())
+	name, err := r.grantName(state)
 	if err != nil {
 		addAPIError(&resp.Diagnostics, "Unable to delete the app grant", err)
 

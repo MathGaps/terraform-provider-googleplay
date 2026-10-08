@@ -28,6 +28,8 @@ const (
 	envTestGroup   = "GOOGLEPLAY_TEST_GROUP"
 	envTestTrack   = "GOOGLEPLAY_TEST_TRACK"
 	envTestUser    = "GOOGLEPLAY_TEST_USER_EMAIL"
+	// envTestCreateTrack opts in to the one test that creates a permanent track.
+	envTestCreateTrack = "GOOGLEPLAY_TEST_CREATE_TRACK"
 )
 
 // TestMain makes the tests run under OpenTofu when it is installed and the
@@ -93,12 +95,17 @@ func testAccPreCheck(t *testing.T, required ...string) {
 // step that applied a configuration: the classic import, whose resulting state
 // must equal the applied one, and an import block planned together with that
 // configuration, which must plan no change to the imported resource.
-func importSteps(resourceName string) []resource.TestStep {
+//
+// verifyIgnore names attributes the classic import cannot reproduce as a
+// string, such as an amount the configuration writes as "4.50" and the API
+// reports as "4.5". The import block step still proves they plan no change.
+func importSteps(resourceName string, verifyIgnore ...string) []resource.TestStep {
 	return []resource.TestStep{
 		{
-			ResourceName:      resourceName,
-			ImportState:       true,
-			ImportStateVerify: true,
+			ResourceName:            resourceName,
+			ImportState:             true,
+			ImportStateVerify:       true,
+			ImportStateVerifyIgnore: verifyIgnore,
 		},
 		{
 			ResourceName:    resourceName,

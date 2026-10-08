@@ -72,7 +72,7 @@ func serverDefaultString(description string, validators ...validator.String) sch
 		MarkdownDescription: description,
 		Optional:            true,
 		Computed:            true,
-		PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+		PlanModifiers:       []planmodifier.String{keepStateOfExistingParent{}},
 		Validators:          validators,
 	}
 }

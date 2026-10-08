@@ -151,28 +151,31 @@ func (c *Client) GrantName(email, packageName string) (string, error) {
 	return user + "/grants/" + packageName, nil
 }
 
-// FindUser lists the developer account's users, following every page, and
-// returns the one with the given email address. The API has no call that gets
-// one user. It returns nil, nil when no user matches.
+// usersPageSizeAll is the only page size users.list accepts. The generated
+// client documents it as "This must be set to -1 to disable pagination", and
+// the live API rejects any other value: the list cannot be paged.
+const usersPageSizeAll = -1
+
+// FindUser lists the developer account's users and returns the one with the
+// given email address, matched case-insensitively. The API has no call that
+// gets one user, and its list returns every user in a single response. It
+// returns nil, nil when no user matches.
 func (c *Client) FindUser(ctx context.Context, email string) (*androidpublisher.User, error) {
 	parent, err := c.DeveloperParent()
 	if err != nil {
 		return nil, err
 	}
 
-	var found *androidpublisher.User
-	err = c.Service.Users.List(parent).Pages(ctx, func(page *androidpublisher.ListUsersResponse) error {
-		for _, user := range page.Users {
-			if found == nil && strings.EqualFold(user.Email, email) {
-				found = user
-			}
-		}
-
-		return nil
-	})
+	list, err := c.Service.Users.List(parent).PageSize(usersPageSizeAll).Context(ctx).Do()
 	if err != nil {
 		return nil, err
 	}
 
-	return found, nil
+	for _, user := range list.Users {
+		if strings.EqualFold(user.Email, email) {
+			return user, nil
+		}
+	}
+
+	return nil, nil
 }

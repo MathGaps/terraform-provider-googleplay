@@ -25,9 +25,8 @@ var (
 	// An Android application id: at least two dot-separated segments, each
 	// starting with a letter.
 	packageNamePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$`)
-	// "Product IDs must be composed of lower-case letters (a-z), numbers (0-9),
-	// underscores (_) and dots (.). It must start with a lower-case letter or
-	// number, and be between 1 and 40 (inclusive) characters in length."
+	// The API's rule for a product id: lower-case letters, numbers, underscores
+	// and dots, starting with a lower-case letter or number, 1 to 40 characters.
 	productIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_.]{0,39}$`)
 	// A track identifier is one path segment of the API's URLs and half of an
 	// import id.

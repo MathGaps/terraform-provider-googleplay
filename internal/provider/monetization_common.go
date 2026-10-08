@@ -131,7 +131,7 @@ func productStateAttribute(kind, activation string) schema.StringAttribute {
 			"to it. Left out, the state is whatever the API reports and is never changed.",
 		Optional:      true,
 		Computed:      true,
-		PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+		PlanModifiers: []planmodifier.String{keepStateOfExistingParent{}},
 		Validators: []validator.String{
 			stringvalidator.OneOf(stateDraft, stateActive, stateInactive),
 		},
