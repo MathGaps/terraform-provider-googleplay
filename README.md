@@ -196,6 +196,12 @@ configuration of this kind, including a subscription.
   nothing when created; the first `googleplay_app_grant` that refers to its
   `email` invites the user and grants the permission in one call. Without a
   grant such a user does not exist, and every plan proposes to create it.
+- **Google Play may replace a permission.** It stores the deprecated app-level
+  `CAN_ACCESS_APP` as `CAN_VIEW_APP_QUALITY` and `CAN_VIEW_NON_FINANCIAL_DATA`,
+  so the provider rejects `CAN_ACCESS_APP` and tells you to write those two.
+  Any other replacement is an error at apply that lists what was asked for and
+  what was stored, never a silent difference: a user or grant being created is
+  removed again, and you write the stored permissions.
 - **The user list is read whole.** The API has no call that reads one user or
   one grant, and its user list cannot be paged, so each read of a
   `googleplay_user` or `googleplay_app_grant` fetches every user of the account.

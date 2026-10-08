@@ -112,11 +112,25 @@ func (r *userResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				MarkdownDescription: "Permissions that apply to every app of the developer account. " +
 					"Leave it out for a user who only holds per-app grants; such a user is created by its first " +
 					"`googleplay_app_grant`. One or more of: " +
-					oneOfDescription(developerAccountPermissions...) + ".",
+					oneOfDescription(developerAccountPermissions...) + ".\n\n" +
+					"`CAN_SEE_ALL_APPS` and `CAN_CHANGE_MANAGED_PLAY_SETTING_GLOBAL` are deprecated and produce " +
+					"a warning. Google Play may replace a permission with others when it stores a user (it does " +
+					"for the app-level `CAN_ACCESS_APP`). The provider never hides that as a silent difference: " +
+					"when what was stored is not what was asked for, the apply fails with an error that lists " +
+					"both, a user being created is removed again, and the fix is to write the stored permissions.",
 				ElementType: types.StringType,
 				Optional:    true,
 				Validators: []validator.Set{
 					setvalidator.ValueStringsAre(stringvalidator.OneOf(developerAccountPermissions...)),
+					replacedPermission{deprecated: map[string]string{
+						// The client marks both deprecated. Whether Google stores
+						// them as written has not been observed, so they warn
+						// rather than fail; a replacement is reported at apply.
+						"CAN_SEE_ALL_APPS": "the API reference says to use CAN_VIEW_NON_FINANCIAL_DATA_GLOBAL. " +
+							"Google Play may store other permissions in its place, in which case the apply fails " +
+							"and names them.",
+						"CAN_CHANGE_MANAGED_PLAY_SETTING_GLOBAL": "the API reference says it is no longer supported.",
+					}},
 				},
 			},
 			"expiration_time": schema.StringAttribute{
@@ -275,6 +289,28 @@ func (r *userResource) createOrDefer(ctx context.Context, plan userModel, diags 
 		created.Name = parent + "/users/" + created.Email
 	}
 
+	// If Google stored other permissions than were asked for, say exactly how
+	// and take the user back out, rather than leave a resource the framework
+	// would taint: replacing a tainted user removes them from the account.
+	if permissionsDiffer(permissions, created.DeveloperAccountPermissions) {
+		detail := permissionsDifference(permissions, created.DeveloperAccountPermissions)
+
+		err := r.client.Service.Users.Delete(created.Name).Context(ctx).Do()
+		if err != nil && !play.IsNotFound(err) {
+			diags.AddAttributeError(path.Root("developer_account_permissions"),
+				"Google Play stored different permissions than were asked for",
+				detail+"\n\nThe user could not be removed again and is recorded as it was stored: "+play.ErrorDetail(err))
+
+			return flattenUser(created, plan, diags), true
+		}
+
+		diags.AddAttributeError(path.Root("developer_account_permissions"),
+			"Google Play stored different permissions than were asked for",
+			detail+"\n\nThe invitation has been withdrawn again, so nothing was left behind. Correct the configuration and apply.")
+
+		return userModel{}, false
+	}
+
 	return flattenUser(created, plan, diags), true
 }
 
@@ -390,6 +426,16 @@ func (r *userResource) Update(ctx context.Context, req resource.UpdateRequest, r
 
 	newState := flattenUser(updated, plan, &resp.Diagnostics)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
+
+	// State records what Google stored either way; a difference from what was
+	// asked for is an error that names it.
+	asked := stringsFromSet(ctx, plan.DeveloperAccountPermissions, &resp.Diagnostics)
+	if permissionsDiffer(asked, updated.DeveloperAccountPermissions) {
+		resp.Diagnostics.AddAttributeError(path.Root("developer_account_permissions"),
+			"Google Play stored different permissions than were asked for",
+			permissionsDifference(asked, updated.DeveloperAccountPermissions)+
+				"\n\nThe user has been updated and state holds what Google stored.")
+	}
 }
 
 func (r *userResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {

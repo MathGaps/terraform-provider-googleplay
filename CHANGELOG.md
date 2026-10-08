@@ -23,6 +23,19 @@ BUG FIXES:
   so the order they run in does not matter. A user declared this way with no
   grant does not exist in Play Console, and each plan proposes to create it.
   A user with account-wide permissions is created as before.
+* **`CAN_ACCESS_APP` is rejected in `googleplay_app_grant`.** Google Play
+  accepts it and stores `CAN_VIEW_APP_QUALITY` and `CAN_VIEW_NON_FINANCIAL_DATA`
+  in its place, so a grant created with it ended in `Provider produced
+  inconsistent result after apply` and a tainted resource. It is now refused at
+  validation, with the two permissions to write instead. The deprecated
+  account-wide `CAN_SEE_ALL_APPS` and `CAN_CHANGE_MANAGED_PLAY_SETTING_GLOBAL`
+  produce a warning.
+* **A permission Google Play replaces is reported by name.** When a user or a
+  grant is stored with other permissions than were asked for, the apply fails
+  with an error that lists what was asked for, what was stored and the
+  difference, in place of the framework's bare inconsistent-result error. A
+  user or grant that was being created is removed again, so nothing is left
+  behind or tainted; an update is kept, and state records what was stored.
 
 ## 0.1.0 (October 8, 2026)
 

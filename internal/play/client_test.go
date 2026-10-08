@@ -171,6 +171,40 @@ func TestFakeRejectsUserWithoutPermissions(t *testing.T) {
 	}
 }
 
+// The fake stores CAN_ACCESS_APP the way the live API was seen to: as the two
+// permissions that replaced it, on a grant created alone or with its user.
+func TestFakeExpandsCanAccessApp(t *testing.T) {
+	fake := fakeplay.New(testPackage)
+	defer fake.Close()
+	client := newTestClient(t, fake.URL)
+
+	asked := []string{"CAN_ACCESS_APP", "CAN_MANAGE_PUBLIC_LISTING", "CAN_MANAGE_TRACK_APKS", "CAN_MANAGE_TRACK_USERS"}
+	want := []string{"CAN_MANAGE_PUBLIC_LISTING", "CAN_MANAGE_TRACK_APKS", "CAN_MANAGE_TRACK_USERS", "CAN_VIEW_APP_QUALITY", "CAN_VIEW_NON_FINANCIAL_DATA"}
+
+	_, err := client.Service.Users.Create("developers/42", &androidpublisher.User{
+		Email:  "ada@example.com",
+		Grants: []*androidpublisher.Grant{{PackageName: testPackage, AppLevelPermissions: asked}},
+	}).Do()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	created, err := client.Service.Grants.Create("developers/42/users/ada@example.com",
+		&androidpublisher.Grant{PackageName: "com.example.other", AppLevelPermissions: asked}).Do()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stored := append([]*androidpublisher.Grant{created}, fake.User("ada@example.com").Grants...)
+	for _, grant := range stored {
+		got := slices.Clone(grant.AppLevelPermissions)
+		slices.Sort(got)
+		if !slices.Equal(got, want) {
+			t.Errorf("grant on %s stored %v, want %v", grant.PackageName, got, want)
+		}
+	}
+}
+
 func TestPendingUsers(t *testing.T) {
 	client := newTestClient(t, "http://127.0.0.1:1")
 

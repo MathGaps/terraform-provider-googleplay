@@ -46,6 +46,8 @@ resource "googleplay_user" "contractor" {
 ### Optional
 
 - `developer_account_permissions` (Set of String) Permissions that apply to every app of the developer account. Leave it out for a user who only holds per-app grants; such a user is created by its first `googleplay_app_grant`. One or more of: `CAN_SEE_ALL_APPS`, `CAN_VIEW_FINANCIAL_DATA_GLOBAL`, `CAN_MANAGE_PERMISSIONS_GLOBAL`, `CAN_EDIT_GAMES_GLOBAL`, `CAN_PUBLISH_GAMES_GLOBAL`, `CAN_REPLY_TO_REVIEWS_GLOBAL`, `CAN_MANAGE_PUBLIC_APKS_GLOBAL`, `CAN_MANAGE_TRACK_APKS_GLOBAL`, `CAN_MANAGE_TRACK_USERS_GLOBAL`, `CAN_MANAGE_PUBLIC_LISTING_GLOBAL`, `CAN_MANAGE_DRAFT_APPS_GLOBAL`, `CAN_CREATE_MANAGED_PLAY_APPS_GLOBAL`, `CAN_CHANGE_MANAGED_PLAY_SETTING_GLOBAL`, `CAN_MANAGE_ORDERS_GLOBAL`, `CAN_MANAGE_APP_CONTENT_GLOBAL`, `CAN_VIEW_NON_FINANCIAL_DATA_GLOBAL`, `CAN_VIEW_APP_QUALITY_GLOBAL`, `CAN_MANAGE_DEEPLINKS_GLOBAL`, `CAN_VIEW_CONNECTED_APPS_GLOBAL`, `CAN_EDIT_CONNECTED_APPS_GLOBAL`.
+
+`CAN_SEE_ALL_APPS` and `CAN_CHANGE_MANAGED_PLAY_SETTING_GLOBAL` are deprecated and produce a warning. Google Play may replace a permission with others when it stores a user (it does for the app-level `CAN_ACCESS_APP`). The provider never hides that as a silent difference: when what was stored is not what was asked for, the apply fails with an error that lists both, a user being created is removed again, and the fix is to write the stored permissions.
 - `expiration_time` (String) When the user's access expires, as an RFC 3339 timestamp such as `2030-01-01T00:00:00Z`. It must be in the future whenever it is set. Leave it out for access that does not expire.
 
 ### Read-Only

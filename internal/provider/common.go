@@ -201,3 +201,91 @@ func oneOfDescription(values ...string) string {
 
 	return strings.Join(quoted, ", ")
 }
+
+// permissionsDiffer reports whether two permission lists hold different
+// permissions, order aside.
+func permissionsDiffer(asked, stored []string) bool {
+	a, b := slices.Clone(asked), slices.Clone(stored)
+	slices.Sort(a)
+	slices.Sort(b)
+
+	return !slices.Equal(slices.Compact(a), slices.Compact(b))
+}
+
+// permissionsDifference describes how what Google stored differs from what
+// was asked for. Google expands some permissions into others when it stores
+// them (CAN_ACCESS_APP becomes two newer ones, for example), and a stored set
+// that is not the planned one would otherwise surface as the framework's
+// "inconsistent result after apply", which names nothing.
+func permissionsDifference(asked, stored []string) string {
+	a, b := slices.Clone(asked), slices.Clone(stored)
+	slices.Sort(a)
+	slices.Sort(b)
+
+	list := func(values []string) string {
+		if len(values) == 0 {
+			return "(none)"
+		}
+
+		return strings.Join(values, ", ")
+	}
+
+	var notStored, added []string
+	for _, permission := range a {
+		if !slices.Contains(b, permission) {
+			notStored = append(notStored, permission)
+		}
+	}
+	for _, permission := range b {
+		if !slices.Contains(a, permission) {
+			added = append(added, permission)
+		}
+	}
+
+	return "Asked for: " + list(a) + ".\n" +
+		"Google stored: " + list(b) + ".\n" +
+		"Asked for and not stored: " + list(notStored) + ".\n" +
+		"Stored and not asked for: " + list(added) + ".\n\n" +
+		"Google Play replaces some permissions with others when it stores them. Write the permissions it " +
+		"stored in the configuration, in place of the ones it did not."
+}
+
+// replacedPermission rejects or warns about a permission Google does not
+// store as written.
+type replacedPermission struct {
+	// rejected maps a permission to what to write instead. Setting one is an
+	// error.
+	rejected map[string]string
+	// deprecated maps a permission to a note. Setting one is a warning.
+	deprecated map[string]string
+}
+
+func (v replacedPermission) Description(_ context.Context) string {
+	return "rejects permissions that Google Play replaces with others when it stores them"
+}
+
+func (v replacedPermission) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (v replacedPermission) ValidateSet(_ context.Context, req validator.SetRequest, resp *validator.SetResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+
+	for _, element := range req.ConfigValue.Elements() {
+		value, ok := element.(types.String)
+		if !ok || value.IsNull() || value.IsUnknown() {
+			continue
+		}
+
+		permission := value.ValueString()
+		if instead, found := v.rejected[permission]; found {
+			resp.Diagnostics.AddAttributeError(req.Path, "Permission is replaced by Google Play",
+				permission+" cannot be managed: "+instead)
+		}
+		if note, found := v.deprecated[permission]; found {
+			resp.Diagnostics.AddAttributeWarning(req.Path, "Deprecated permission", permission+" is deprecated: "+note)
+		}
+	}
+}

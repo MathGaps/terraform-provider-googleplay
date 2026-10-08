@@ -36,6 +36,11 @@ type Server struct {
 	apps     map[string]*app
 	requests []string
 	nextEdit int
+
+	// Expansions maps a permission to the permissions the server stores in
+	// its place, for app-level and account-level permissions alike. It starts
+	// with the one replacement observed against the live API.
+	Expansions map[string][]string
 }
 
 type app struct {
@@ -58,6 +63,9 @@ func New(packageNames ...string) *Server {
 	s := &Server{
 		users: map[string]*androidpublisher.User{},
 		apps:  map[string]*app{},
+		Expansions: map[string][]string{
+			"CAN_ACCESS_APP": {"CAN_VIEW_APP_QUALITY", "CAN_VIEW_NON_FINANCIAL_DATA"},
+		},
 	}
 	for _, name := range packageNames {
 		s.apps[name] = &app{
@@ -313,11 +321,13 @@ func (s *Server) routeDeveloper(r *http.Request, parts []string, body []byte) (a
 			}
 			user.Name = "developers/" + developer + "/users/" + user.Email
 			user.AccessState = "INVITED"
+			user.DeveloperAccountPermissions = s.expand(user.DeveloperAccountPermissions)
 			for _, grant := range user.Grants {
 				if grant.PackageName == "" || len(grant.AppLevelPermissions) == 0 {
 					return nil, badRequest("a grant needs a packageName and appLevelPermissions")
 				}
 				grant.Name = user.Name + "/grants/" + grant.PackageName
+				grant.AppLevelPermissions = s.expand(grant.AppLevelPermissions)
 			}
 			s.users[key] = user
 
@@ -337,7 +347,7 @@ func (s *Server) routeDeveloper(r *http.Request, parts []string, body []byte) (a
 			for _, field := range maskFields(r) {
 				switch field {
 				case "developerAccountPermissions":
-					user.DeveloperAccountPermissions = patch.DeveloperAccountPermissions
+					user.DeveloperAccountPermissions = s.expand(patch.DeveloperAccountPermissions)
 				case "expirationTime":
 					user.ExpirationTime = patch.ExpirationTime
 				default:
@@ -368,6 +378,7 @@ func (s *Server) routeDeveloper(r *http.Request, parts []string, body []byte) (a
 				return nil, conflict("Grant for %s already exists.", grant.PackageName)
 			}
 			grant.Name = user.Name + "/grants/" + grant.PackageName
+			grant.AppLevelPermissions = s.expand(grant.AppLevelPermissions)
 			user.Grants = append(user.Grants, grant)
 
 			return clone(grant), nil
@@ -391,7 +402,7 @@ func (s *Server) routeDeveloper(r *http.Request, parts []string, body []byte) (a
 				if field != "appLevelPermissions" {
 					return nil, badRequest("unknown update mask field %q", field)
 				}
-				user.Grants[index].AppLevelPermissions = patch.AppLevelPermissions
+				user.Grants[index].AppLevelPermissions = s.expand(patch.AppLevelPermissions)
 			}
 
 			return clone(user.Grants[index]), nil
@@ -403,6 +414,25 @@ func (s *Server) routeDeveloper(r *http.Request, parts []string, body []byte) (a
 	}
 
 	return nil, notFound("unknown path %s %s", r.Method, r.URL.Path)
+}
+
+// expand replaces each permission that has an expansion with what the server
+// stores for it, without duplicates, keeping the order.
+func (s *Server) expand(permissions []string) []string {
+	var out []string
+	for _, permission := range permissions {
+		stored, ok := s.Expansions[permission]
+		if !ok {
+			stored = []string{permission}
+		}
+		for _, p := range stored {
+			if !slices.Contains(out, p) {
+				out = append(out, p)
+			}
+		}
+	}
+
+	return out
 }
 
 // listUsers returns every user in one response. Like the real API it refuses
