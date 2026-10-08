@@ -14,6 +14,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
@@ -93,9 +94,9 @@ func (r *userResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
 			"email": schema.StringAttribute{
-				MarkdownDescription: "The user's email address. Changing it replaces the user.",
+				MarkdownDescription: "The user's email address. Changing it replaces the user. A difference in case only is not a change.",
 				Required:            true,
-				PlanModifiers:       []planmodifier.String{stringplanmodifier.RequiresReplace()},
+				PlanModifiers:       []planmodifier.String{keepStateIfEqualFold{}, stringplanmodifier.RequiresReplace()},
 				Validators: []validator.String{
 					stringvalidator.RegexMatches(emailPattern, "must be an email address"),
 				},
@@ -125,11 +126,14 @@ func (r *userResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				MarkdownDescription: "The state of the user's access: `INVITED`, `INVITATION_EXPIRED`, " +
 					"`ACCESS_GRANTED` or `ACCESS_EXPIRED`.",
 				Computed: true,
+				// Nothing this resource writes changes it; it is refreshed on read.
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
 			"partial": schema.BoolAttribute{
 				MarkdownDescription: "Whether the user holds permissions the API does not show, which is the case " +
 					"for the account owner and when the credentials cannot manage every app. Such a user cannot be fully managed here.",
-				Computed: true,
+				Computed:      true,
+				PlanModifiers: []planmodifier.Bool{boolplanmodifier.UseStateForUnknown()},
 			},
 		},
 	}

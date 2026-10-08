@@ -38,7 +38,7 @@ resource "googleplay_user" "contractor" {
 
 ### Required
 
-- `email` (String) The user's email address. Changing it replaces the user.
+- `email` (String) The user's email address. Changing it replaces the user. A difference in case only is not a change.
 
 ### Optional
 

@@ -282,9 +282,11 @@ resource "googleplay_track_testers" "internal" {
 	resource.UnitTest(t, resource.TestCase{
 		ProtoV6ProviderFactories: testProviderFactories,
 		Steps: []resource.TestStep{
-			importStep("googleplay_user.ada", "ada@example.com"),
+			// Imported with the capitalisation Play Console shows, configured
+			// in lower case: not a replacement.
+			importStep("googleplay_user.ada", "Ada@Example.com"),
 			importStep("googleplay_user.grants_only", "grants-only@example.com"),
-			importStep("googleplay_app_grant.ada", "ada@example.com/"+unitPackage),
+			importStep("googleplay_app_grant.ada", "Ada@Example.com/"+unitPackage),
 			importStep("googleplay_track_testers.internal", unitPackage+"/internal"),
 			{
 				Config:   config,
@@ -293,7 +295,7 @@ resource "googleplay_track_testers" "internal" {
 			{
 				Config: config,
 				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("googleplay_user.ada", "email", "ada@example.com"),
+					resource.TestCheckResourceAttr("googleplay_user.ada", "email", "Ada@Example.com"),
 					resource.TestCheckResourceAttr("googleplay_user.ada", "access_state", "ACCESS_GRANTED"),
 					resource.TestCheckNoResourceAttr("googleplay_user.grants_only", "developer_account_permissions"),
 					resource.TestCheckResourceAttr("googleplay_app_grant.ada", "app_level_permissions.#", "2"),

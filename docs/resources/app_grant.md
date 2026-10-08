@@ -39,7 +39,7 @@ resource "googleplay_app_grant" "release_manager" {
 ### Required
 
 - `app_level_permissions` (Set of String) The permissions granted on the app. One or more of: `CAN_ACCESS_APP`, `CAN_VIEW_FINANCIAL_DATA`, `CAN_MANAGE_PERMISSIONS`, `CAN_REPLY_TO_REVIEWS`, `CAN_MANAGE_PUBLIC_APKS`, `CAN_MANAGE_TRACK_APKS`, `CAN_MANAGE_TRACK_USERS`, `CAN_MANAGE_PUBLIC_LISTING`, `CAN_MANAGE_DRAFT_APPS`, `CAN_MANAGE_ORDERS`, `CAN_MANAGE_APP_CONTENT`, `CAN_VIEW_NON_FINANCIAL_DATA`, `CAN_VIEW_APP_QUALITY`, `CAN_MANAGE_DEEPLINKS`.
-- `email` (String) The email address of the user. Changing it replaces the grant.
+- `email` (String) The email address of the user. Changing it replaces the grant. A difference in case only is not a change.
 - `package_name` (String) The package name (application id) of the app, for example `com.example.app`. The app must already exist in Play Console: the API cannot create one. Changing it replaces the grant.
 
 ### Read-Only

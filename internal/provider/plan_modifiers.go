@@ -5,6 +5,7 @@ package provider
 
 import (
 	"context"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -54,4 +55,30 @@ func (keepStateOfExistingParent) PlanModifyString(ctx context.Context, req planm
 	}
 
 	resp.PlanValue = req.StateValue
+}
+
+// keepStateIfEqualFold keeps the value in state when the configured one
+// differs from it only in case. Email addresses are matched case-insensitively
+// by Play Console, and without this a user imported as "Ada@Example.com" and
+// configured as "ada@example.com" would be planned for replacement, which
+// means removing them from the developer account. List it before
+// RequiresReplace.
+type keepStateIfEqualFold struct{}
+
+func (keepStateIfEqualFold) Description(_ context.Context) string {
+	return "Keeps the value in state when the configured value differs only in case."
+}
+
+func (m keepStateIfEqualFold) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
+
+func (keepStateIfEqualFold) PlanModifyString(_ context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
+	if req.StateValue.IsNull() || req.StateValue.IsUnknown() || req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+
+	if strings.EqualFold(req.StateValue.ValueString(), req.ConfigValue.ValueString()) {
+		resp.PlanValue = req.StateValue
+	}
 }

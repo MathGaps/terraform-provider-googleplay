@@ -83,9 +83,9 @@ func (r *appGrantResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
 			"email": schema.StringAttribute{
-				MarkdownDescription: "The email address of the user. Changing it replaces the grant.",
+				MarkdownDescription: "The email address of the user. Changing it replaces the grant. A difference in case only is not a change.",
 				Required:            true,
-				PlanModifiers:       []planmodifier.String{stringplanmodifier.RequiresReplace()},
+				PlanModifiers:       []planmodifier.String{keepStateIfEqualFold{}, stringplanmodifier.RequiresReplace()},
 				Validators: []validator.String{
 					stringvalidator.RegexMatches(emailPattern, "must be an email address"),
 				},
