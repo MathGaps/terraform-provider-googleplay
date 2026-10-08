@@ -1,0 +1,121 @@
+# Acceptance tests against a real Play Console developer account.
+#
+# Deliberately manual. These tests write to whichever developer account the
+# secrets of the `acceptance` environment belong to: they invite and remove a
+# user, change the tester groups of a track, and create products whose ids
+# Google Play then reserves forever (see ACCEPTANCE_TESTING.md). None of that
+# belongs on a push trigger.
+name: Acceptance Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      tofu_version:
+        description: 'OpenTofu version to test against'
+        type: string
+        default: 'latest'
+      run_filter:
+        description: 'go test -run pattern (default: every TestAcc*)'
+        type: string
+        default: '^TestAcc'
+      create_track:
+        description: >-
+          Include TestAccTrackResource_create. Creates the test track
+          PERMANENTLY -- the API cannot delete a track, so this passes once
+          per app, ever.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Never cancel a run in progress: killing the job mid-apply skips the destroy
+# and leaves resources behind in Play Console. Queue instead.
+concurrency:
+  group: acceptance-tests
+  cancel-in-progress: false
+
+jobs:
+  acceptance:
+    name: Acceptance Tests (OpenTofu ${{ inputs.tofu_version }})
+    runs-on: ubuntu-latest
+    environment: acceptance
+    timeout-minutes: 60
+    steps:
+      # Without credentials every acceptance test skips itself and the job goes
+      # green having tested nothing, which is worse than a failure on a run
+      # somebody triggered on purpose.
+      - name: Require credentials
+        env:
+          CREDENTIALS: ${{ secrets.GOOGLEPLAY_CREDENTIALS }}
+          TEST_PACKAGE: ${{ vars.GOOGLEPLAY_TEST_PACKAGE }}
+        run: |
+          missing=()
+          [ -n "$CREDENTIALS" ]  || missing+=("secret GOOGLEPLAY_CREDENTIALS")
+          [ -n "$TEST_PACKAGE" ] || missing+=("variable GOOGLEPLAY_TEST_PACKAGE")
+          if [ ${#missing[@]} -ne 0 ]; then
+            printf 'Missing in the acceptance environment: %s\n' "${missing[@]}" >&2
+            echo "Acceptance tests would silently skip themselves. Refusing to run." >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: ${{ inputs.tofu_version }}
+          tofu_wrapper: false
+      - run: go mod download
+
+      - name: Run acceptance tests
+        env:
+          TF_ACC: "1"
+          TF_ACC_PROVIDER_HOST: registry.opentofu.org
+          GOOGLEPLAY_CREDENTIALS: ${{ secrets.GOOGLEPLAY_CREDENTIALS }}
+          GOOGLEPLAY_TEST_PACKAGE: ${{ vars.GOOGLEPLAY_TEST_PACKAGE }}
+          # Each of these gates the tests that need it; without it they skip
+          # themselves, and the summary below says so rather than letting it
+          # pass unnoticed.
+          GOOGLEPLAY_DEVELOPER_ID: ${{ vars.GOOGLEPLAY_DEVELOPER_ID }}
+          GOOGLEPLAY_TEST_GROUP: ${{ vars.GOOGLEPLAY_TEST_GROUP }}
+          GOOGLEPLAY_TEST_TRACK: ${{ vars.GOOGLEPLAY_TEST_TRACK }}
+          GOOGLEPLAY_TEST_USER_EMAIL: ${{ vars.GOOGLEPLAY_TEST_USER_EMAIL }}
+          RUN_FILTER: ${{ inputs.run_filter }}
+          CREATE_TRACK: ${{ inputs.create_track }}
+        # -p 1 and no t.Parallel: the suite shares one app and one track.
+        run: |
+          export TF_ACC_TERRAFORM_PATH="$(command -v tofu)"
+          if [ "$CREATE_TRACK" = "true" ]; then
+            export GOOGLEPLAY_TEST_CREATE_TRACK=1
+            echo "::warning::TestAccTrackResource_create included -- the track it creates is permanent."
+          fi
+          {
+            echo "OpenTofu: $(tofu version | head -n 1)"
+            echo "Filter:   -run '$RUN_FILTER'"
+            echo "App:      $GOOGLEPLAY_TEST_PACKAGE"
+            [ -n "$GOOGLEPLAY_DEVELOPER_ID" ] && [ -n "$GOOGLEPLAY_TEST_USER_EMAIL" ] \
+              || echo "Users and grants: SKIPPED (GOOGLEPLAY_DEVELOPER_ID or GOOGLEPLAY_TEST_USER_EMAIL not set)"
+            [ -n "$GOOGLEPLAY_TEST_GROUP" ] \
+              || echo "Track testers: SKIPPED (GOOGLEPLAY_TEST_GROUP not set)"
+          } >> "$GITHUB_STEP_SUMMARY"
+          go test ./internal/provider/ -v -p 1 -timeout 55m -run "$RUN_FILTER"
+
+      # A run killed mid-apply never reaches the destroy.
+      - name: Leftover resource reminder
+        if: failure()
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'EOF_SUMMARY'
+
+          ### Check for leftovers
+
+          A failed or timed-out run can leave the test user invited, tester
+          groups on the test track, and draft products named `tfacc_*` under
+          the test app. See the cleanup list in `ACCEPTANCE_TESTING.md`.
+
+          Product ids are randomised per run, so a leftover never blocks the
+          next run -- but Google Play reserves every product id it has ever
+          seen, so each run consumes two permanently. That is expected.
+          EOF_SUMMARY

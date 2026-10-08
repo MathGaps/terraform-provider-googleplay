@@ -1,6 +1,8 @@
 module github.com/MathGaps/terraform-provider-googleplay
 
-go 1.26.2
+go 1.26.0
+
+toolchain go1.26.8
 
 require (
 	github.com/hashicorp/terraform-plugin-framework v1.19.0

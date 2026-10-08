@@ -1,0 +1,78 @@
+---
+page_title: "Provider: Google Play"
+description: |-
+  Manage a Google Play Console developer account: users and per-app permissions, testing tracks and testers, subscriptions and one-time products.
+---
+
+# Google Play Provider
+
+{{ .Description | trimspace }}
+
+Published to the [OpenTofu Registry](https://search.opentofu.org/provider/mathgaps/googleplay)
+as `mathgaps/googleplay`. It is not on the Terraform Registry: it works with
+Terraform too, but only when installed from a
+[mirror](https://developer.hashicorp.com/terraform/cli/config/config-file#provider-installation)
+you populate yourself from the GitHub releases.
+
+## Example Usage
+
+{{ tffile "examples/provider/provider.tf" }}
+
+## Authentication
+
+The provider authenticates as a Google Cloud service account, with the
+`https://www.googleapis.com/auth/androidpublisher` scope. It looks for
+credentials in this order:
+
+1. the `credentials` argument: the JSON text of a service account key;
+2. the `GOOGLEPLAY_CREDENTIALS` environment variable: the same JSON text;
+3. [application default credentials](https://cloud.google.com/docs/authentication/application-default-credentials),
+   which covers a key file named by `GOOGLE_APPLICATION_CREDENTIALS`, `gcloud
+   auth application-default login`, and workload identity federation.
+
+`credentials` holds the content of the key, not a path to it. To read a key
+from a file, write `credentials = file("key.json")`, or point
+`GOOGLE_APPLICATION_CREDENTIALS` at the file and leave `credentials` out.
+
+The service account needs two things before any call succeeds:
+
+1. The **Google Play Android Developer API** enabled in the Google Cloud project
+   the service account belongs to.
+2. An invitation in Play Console, under **Users and permissions**, to the
+   service account's email address, with the permissions for what you manage:
+
+   | To manage | The service account needs |
+   |---|---|
+   | `googleplay_user`, `googleplay_app_grant` | Admin (all permissions) on the account |
+   | `googleplay_track`, `googleplay_track_testers` | Release apps to testing tracks, and Manage testing tracks and edit tester lists |
+   | `googleplay_subscription`, `googleplay_one_time_product`, `googleplay_converted_region_prices` | Manage store presence |
+   | `googleplay_tracks` | View app information |
+
+   Google does not publish which permission each API method checks, so treat
+   the table as a starting point. A call the account may not make fails with a
+   403 whose reason is shown in the diagnostic.
+
+A permission granted in Play Console can take some time to reach the API.
+
+## Start with an import
+
+The Google Play Developer API cannot create an app. Create the app in Play
+Console, then declare what already exists and import it:
+
+```terraform
+import {
+  to = googleplay_track_testers.internal
+  id = "com.example.app/internal"
+}
+
+resource "googleplay_track_testers" "internal" {
+  package_name  = "com.example.app"
+  track         = "internal"
+  google_groups = ["developers@example.com"]
+}
+```
+
+When the configuration matches what is in Play Console, `tofu plan` reports the
+import and no change.
+
+{{ .SchemaMarkdown | trimspace }}

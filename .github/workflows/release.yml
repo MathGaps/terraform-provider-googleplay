@@ -1,0 +1,80 @@
+# Provider release workflow.
+name: Release
+
+# This GitHub action creates a release when a tag that matches the pattern
+# "v*" (e.g. v0.1.0) is created.
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Releases need permissions to read and write the repository contents.
+# GitHub considers creating releases and uploading assets as writing contents.
+permissions:
+  contents: write
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest
+    # The GPG signing key (GPG_PRIVATE_KEY, PASSPHRASE) belongs to this
+    # environment, which admits only v* tags.
+    environment: release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Allow goreleaser to access older tag information.
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - name: Import GPG key
+        uses: crazy-max/ghaction-import-gpg@2dc316deee8e90f13e1a351ab510b4d5bc0c82cd # v7.0.0
+        id: import_gpg
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.PASSPHRASE }}
+      # The registry shows the GitHub release body as the release notes, and a
+      # list of commit subjects is not release notes. CHANGELOG.md already
+      # holds a written section per version, so hand GoReleaser that instead.
+      # Note that .goreleaser.yml must NOT disable the changelog: that is the
+      # step which loads this file, and disabling it publishes an empty body
+      # while every step still reports success.
+      #
+      # Fails when the tag has no matching section rather than releasing with
+      # an empty body: a version is ingested once and cannot be re-released,
+      # so silently shipping no notes is worse than not shipping. The heading
+      # must be dated: "## 0.1.0 (Unreleased)" is refused, because a tag is the
+      # moment a version stops being unreleased.
+      - name: Extract release notes from CHANGELOG.md
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if grep -Eq "^## ${version//./\\.} \(Unreleased\)" CHANGELOG.md; then
+            echo "CHANGELOG.md still says '## $version (Unreleased)'." >&2
+            echo "Replace (Unreleased) with the release date before tagging." >&2
+            exit 1
+          fi
+          awk -v v="$version" '
+            !found && index($0, "## " v) == 1 && (length($0) == length("## " v) || substr($0, length("## " v) + 1, 1) ~ /[ (]/) { found=1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > "$RUNNER_TEMP/release-notes.md"
+          if [ ! -s "$RUNNER_TEMP/release-notes.md" ]; then
+            echo "CHANGELOG.md has no '## $version' section for tag $GITHUB_REF_NAME." >&2
+            echo "Add one before tagging: it becomes the release notes on the registry." >&2
+            exit 1
+          fi
+          echo "Release notes ($(wc -l < "$RUNNER_TEMP/release-notes.md") lines):"
+          cat "$RUNNER_TEMP/release-notes.md"
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          # Pinned to the v2 line: a future major could drop options this
+          # configuration still uses, and a release is not the place to find out.
+          version: '~> v2'
+          args: release --clean --release-notes=${{ runner.temp }}/release-notes.md
+        env:
+          # GitHub sets the GITHUB_TOKEN secret automatically.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}

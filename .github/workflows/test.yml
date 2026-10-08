@@ -1,0 +1,160 @@
+# Provider testing workflow.
+#
+# Credential-free by construction: nothing here touches the Google Play
+# Developer API, so it runs identically on forks. The acceptance tests live in
+# .github/workflows/acceptance.yml and are triggered by hand.
+name: Tests
+
+on:
+  # Root-level markdown only: `*` does not match `/`, so a change under docs/
+  # still runs the generate job that checks docs/ is in sync.
+  pull_request:
+    paths-ignore:
+      - '*.md'
+      - 'LICENSE'
+  # Only on main: a branch push that also has a pull request open would
+  # otherwise run this whole workflow twice for the same commit. GitHub
+  # Actions does not support YAML anchors, hence the repeated list.
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '*.md'
+      - 'LICENSE'
+  workflow_dispatch:
+
+# Testing only needs permissions to read the repository contents.
+permissions:
+  contents: read
+
+# Superseding a commit makes its in-flight run pointless.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Ensure the project builds and is clean before running anything heavier.
+  build:
+    name: Build & Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - run: go mod download
+      - run: go build -v ./...
+      - run: go vet ./...
+      - name: Check licence headers
+        run: ./scripts/check-headers.sh
+      - name: Run linters
+        # v9 of the action is required to read a golangci-lint v2 configuration.
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.13.2
+
+  generate:
+    name: Check Generated Docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            tools/go.sum
+      # scripts/generate-docs.sh reads the provider schema with tofu and hands
+      # it to tfplugindocs, so no terraform binary is needed.
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_wrapper: false
+      - run: make generate
+      - name: git diff
+        run: |
+          git diff --compact-summary --exit-code || \
+            (echo; echo "Unexpected difference in directories after code generation. Run 'make generate' command and commit."; exit 1)
+          # A page for a new resource is untracked, which `git diff` does not see.
+          untracked="$(git ls-files --others --exclude-standard -- docs examples)"
+          if [ -n "$untracked" ]; then
+            echo "Generated files are not committed:"; echo "$untracked"; exit 1
+          fi
+
+  # Formatting the examples cannot catch configuration the provider schema
+  # rejects, so validate every example directory against a locally built
+  # provider. No credentials needed: validate never reaches the API.
+  examples:
+    name: Validate Examples
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_wrapper: false
+      - run: go mod download
+      - run: make validate-examples
+
+  # Reachability-based: govulncheck reports a vulnerability only when a call
+  # path from this module actually reaches the affected symbol, so a CVE deep in
+  # a dependency the provider never calls does not fail the build.
+  vulncheck:
+    name: Vulnerability Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      # Pinned rather than @latest: the tool carries its own `go` directive, and
+      # a release that raises it past the version go.mod pins fails to build
+      # here. Raise this together with go.mod.
+      - name: Run govulncheck
+        run: |
+          go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+
+  # The acceptance tests in this package skip themselves without TF_ACC, so
+  # this is the credential-free tier: the real client and the real provider
+  # driven against an in-memory fake of the Google Play Developer API, and
+  # pure-function tests of the money and model code.
+  unit:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      # terraform-plugin-testing drives a real CLI even for resource.UnitTest.
+      # The tests find `tofu` on PATH by themselves (see TestMain); the
+      # variables below say so explicitly.
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_wrapper: false
+      - run: go mod download
+      - name: Run unit tests
+        run: |
+          export TF_ACC_TERRAFORM_PATH="$(command -v tofu)"
+          export TF_ACC_PROVIDER_HOST="registry.opentofu.org"
+          go test ./... -race -covermode=atomic -coverprofile=coverage.out
+      - name: Coverage summary
+        run: |
+          {
+            echo '### Coverage'
+            echo
+            echo '```'
+            go tool cover -func=coverage.out | tail -n 1
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
