@@ -62,8 +62,11 @@ release:
   extra_files:
     - glob: 'terraform-registry-manifest.json'
       name_template: '{{ .ProjectName }}_{{ .Version }}_manifest.json'
-  # If you want to manually examine the release before it is live, uncomment this line:
-  # draft: true
+  # A draft until every asset is up: the release workflow publishes it in its last
+  # step. The OpenTofu registry scans for new releases every few minutes, and a
+  # release it sees before SHA256SUMS has uploaded is recorded as an error
+  # ("checksums not found in release") and not retried for half an hour.
+  draft: true
 # No changelog block: `--release-notes` in the release workflow supplies the
 # body from CHANGELOG.md, and GoReleaser loads that file during the changelog
 # step. `disable: true` here skips the step -- and with it the file, silently
