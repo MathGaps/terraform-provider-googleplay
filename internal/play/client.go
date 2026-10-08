@@ -156,11 +156,9 @@ func (c *Client) GrantName(email, packageName string) (string, error) {
 // the live API rejects any other value: the list cannot be paged.
 const usersPageSizeAll = -1
 
-// FindUser lists the developer account's users and returns the one with the
-// given email address, matched case-insensitively. The API has no call that
-// gets one user, and its list returns every user in a single response. It
-// returns nil, nil when no user matches.
-func (c *Client) FindUser(ctx context.Context, email string) (*androidpublisher.User, error) {
+// ListUsers returns every user of the developer account, each with its
+// per-app grants, in the single response the API gives.
+func (c *Client) ListUsers(ctx context.Context) ([]*androidpublisher.User, error) {
 	parent, err := c.DeveloperParent()
 	if err != nil {
 		return nil, err
@@ -171,7 +169,19 @@ func (c *Client) FindUser(ctx context.Context, email string) (*androidpublisher.
 		return nil, err
 	}
 
-	for _, user := range list.Users {
+	return list.Users, nil
+}
+
+// FindUser returns the user with the given email address, matched
+// case-insensitively. The API has no call that gets one user, so it lists them
+// all. It returns nil, nil when no user matches.
+func (c *Client) FindUser(ctx context.Context, email string) (*androidpublisher.User, error) {
+	users, err := c.ListUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, user := range users {
 		if strings.EqualFold(user.Email, email) {
 			return user, nil
 		}

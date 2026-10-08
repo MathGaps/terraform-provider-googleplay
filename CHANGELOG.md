@@ -27,6 +27,9 @@ FEATURES:
   purchase options. Import id: `package_name/product_id`.
 * **`googleplay_tracks` and `googleplay_converted_region_prices` data sources.**
   The tracks of an app, and one price converted into every region's.
+* **`googleplay_users` data source.** Every user of the developer account with
+  their account-wide permissions and per-app grants, for writing import blocks
+  from what already exists.
 
 NOTES:
 

@@ -38,6 +38,7 @@ that you fill from the [GitHub releases](https://github.com/MathGaps/terraform-p
 
 | Data source | What it reads |
 |---|---|
+| [`googleplay_users`](docs/data-sources/users.md) | Every user of the developer account, with permissions and per-app grants |
 | [`googleplay_tracks`](docs/data-sources/tracks.md) | The tracks of an app and the releases on them |
 | [`googleplay_converted_region_prices`](docs/data-sources/converted_region_prices.md) | One price converted into the price of every region |
 
