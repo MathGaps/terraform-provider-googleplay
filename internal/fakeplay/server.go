@@ -306,9 +306,19 @@ func (s *Server) routeDeveloper(r *http.Request, parts []string, body []byte) (a
 			if _, exists := s.users[key]; exists {
 				return nil, conflict("User %s already exists.", user.Email)
 			}
+			// What the live API answers for a user who would hold nothing: a
+			// create must carry an account permission or a grant.
+			if len(user.DeveloperAccountPermissions) == 0 && len(user.Grants) == 0 {
+				return nil, badRequest("No permissions set for this user.")
+			}
 			user.Name = "developers/" + developer + "/users/" + user.Email
 			user.AccessState = "INVITED"
-			user.Grants = nil
+			for _, grant := range user.Grants {
+				if grant.PackageName == "" || len(grant.AppLevelPermissions) == 0 {
+					return nil, badRequest("a grant needs a packageName and appLevelPermissions")
+				}
+				grant.Name = user.Name + "/grants/" + grant.PackageName
+			}
 			s.users[key] = user
 
 			return clone(user), nil

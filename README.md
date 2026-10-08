@@ -190,6 +190,12 @@ configuration of this kind, including a subscription.
   of the two product resources, defaulting to `2022/02`. The current version is
   in [this article](https://support.google.com/googleplay/android-developer/answer/10532353),
   and `googleplay_converted_region_prices` reports it.
+- **A user with only per-app grants is created by its first grant.** Google
+  Play refuses to create a user who holds no permission at all. A
+  `googleplay_user` without `developer_account_permissions` therefore calls
+  nothing when created; the first `googleplay_app_grant` that refers to its
+  `email` invites the user and grants the permission in one call. Without a
+  grant such a user does not exist, and every plan proposes to create it.
 - **The user list is read whole.** The API has no call that reads one user or
   one grant, and its user list cannot be paged, so each read of a
   `googleplay_user` or `googleplay_app_grant` fetches every user of the account.

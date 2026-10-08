@@ -142,6 +142,62 @@ func TestFakeRejectsPagedUserList(t *testing.T) {
 	}
 }
 
+// The fake refuses what the live API refuses: a user who would hold nothing.
+// A create carrying a grant is accepted and the grant is stored.
+func TestFakeRejectsUserWithoutPermissions(t *testing.T) {
+	fake := fakeplay.New(testPackage)
+	defer fake.Close()
+	client := newTestClient(t, fake.URL)
+
+	_, err := client.Service.Users.Create("developers/42", &androidpublisher.User{Email: "ada@example.com"}).Do()
+	if StatusCode(err) != http.StatusBadRequest || !strings.Contains(ErrorDetail(err), "No permissions set for this user.") {
+		t.Fatalf("a create with neither permissions nor grants returned %v", err)
+	}
+	if fake.User("ada@example.com") != nil {
+		t.Fatal("the refused user was stored")
+	}
+
+	_, err = client.Service.Users.Create("developers/42", &androidpublisher.User{
+		Email:  "ada@example.com",
+		Grants: []*androidpublisher.Grant{{PackageName: testPackage, AppLevelPermissions: []string{"CAN_VIEW_NON_FINANCIAL_DATA"}}},
+	}).Do()
+	if err != nil {
+		t.Fatalf("a create carrying a grant was refused: %v", err)
+	}
+
+	user := fake.User("ada@example.com")
+	if user == nil || len(user.Grants) != 1 || user.Grants[0].Name != "developers/42/users/ada@example.com/grants/"+testPackage {
+		t.Errorf("the grant sent with the create was not stored: %+v", user)
+	}
+}
+
+func TestPendingUsers(t *testing.T) {
+	client := newTestClient(t, "http://127.0.0.1:1")
+
+	if _, ok := client.PendingUser("ada@example.com"); ok {
+		t.Fatal("a user is pending before any was deferred")
+	}
+
+	client.DeferUser(PendingUser{Email: "Ada@Example.com", ExpirationTime: "2099-01-01T00:00:00Z"})
+
+	pending, ok := client.PendingUser("ada@example.com")
+	if !ok || pending.Email != "Ada@Example.com" || pending.ExpirationTime != "2099-01-01T00:00:00Z" {
+		t.Errorf("PendingUser = %+v, %v; want the deferred user, matched case-insensitively", pending, ok)
+	}
+
+	client.ForgetPendingUser("ADA@example.com")
+	if _, ok := client.PendingUser("ada@example.com"); ok {
+		t.Error("the user is still pending after being forgotten")
+	}
+
+	// The lock is per user, whatever the case: this would deadlock otherwise.
+	unlock := client.LockUser("ada@example.com")
+	other := client.LockUser("grace@example.com")
+	other()
+	unlock()
+	client.LockUser("ADA@EXAMPLE.COM")()
+}
+
 func TestCommitEditCommits(t *testing.T) {
 	fake := fakeplay.New(testPackage)
 	defer fake.Close()

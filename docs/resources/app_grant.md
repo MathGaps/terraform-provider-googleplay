@@ -3,13 +3,16 @@
 page_title: "googleplay_app_grant Resource - Google Play"
 subcategory: ""
 description: |-
-  The permissions one user of the developer account holds on one app. The user must already be in the account: declare it with googleplay_user and refer to its email.
+  The permissions one user of the developer account holds on one app. Declare the user with googleplay_user and refer to its email.
+  A user that googleplay_user declares with no account-wide permission does not exist until its first grant: Google Play creates a user only together with a permission. Creating the first grant of such a user invites the user and grants the permission in a single call; further grants are added to the user as usual. Grants of one user are applied one at a time.
   The API has no call that reads one grant, and its user list cannot be paged, so every read fetches all of the account's users in one request. Requires the provider's developer_id.
 ---
 
 # googleplay_app_grant (Resource)
 
-The permissions one user of the developer account holds on one app. The user must already be in the account: declare it with `googleplay_user` and refer to its `email`.
+The permissions one user of the developer account holds on one app. Declare the user with `googleplay_user` and refer to its `email`.
+
+A user that `googleplay_user` declares with no account-wide permission does not exist until its first grant: Google Play creates a user only together with a permission. Creating the first grant of such a user invites the user and grants the permission in a single call; further grants are added to the user as usual. Grants of one user are applied one at a time.
 
 The API has no call that reads one grant, and its user list cannot be paged, so every read fetches all of the account's users in one request. Requires the provider's `developer_id`.
 

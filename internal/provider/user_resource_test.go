@@ -109,7 +109,8 @@ func TestUserResource_removedOutOfBand(t *testing.T) {
 
 	const config = `
 resource "googleplay_user" "test" {
-  email = "grace@example.com"
+  email                         = "grace@example.com"
+  developer_account_permissions = ["CAN_VIEW_APP_QUALITY_GLOBAL"]
 }`
 
 	resource.UnitTest(t, resource.TestCase{
@@ -318,6 +319,230 @@ resource "googleplay_track_testers" "internal" {
 			},
 		},
 	})
+}
+
+// Google refuses to create a user who holds no permission at all, so a user
+// declared with only a per-app grant is created by that grant, in one call.
+func TestAppGrantResource_createsPermissionlessUser(t *testing.T) {
+	fake := newUnitFake(t)
+
+	config := fmt.Sprintf(`
+resource "googleplay_user" "test" {
+  email           = "grace@example.com"
+  expiration_time = "2099-01-01T00:00:00Z"
+}
+
+resource "googleplay_app_grant" "test" {
+  email                 = googleplay_user.test.email
+  package_name          = %q
+  app_level_permissions = ["CAN_VIEW_NON_FINANCIAL_DATA", "CAN_MANAGE_TRACK_APKS"]
+}`, unitPackage)
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		CheckDestroy: func(*terraform.State) error {
+			if fake.User("grace@example.com") != nil {
+				return fmt.Errorf("the user still exists after destroy")
+			}
+
+			return nil
+		},
+		Steps: []resource.TestStep{
+			{
+				// The framework also asserts that the plan after this apply is
+				// empty, with and without a refresh.
+				Config: config,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("googleplay_user.test", "id", "grace@example.com"),
+					resource.TestCheckNoResourceAttr("googleplay_user.test", "developer_account_permissions"),
+					resource.TestCheckResourceAttr("googleplay_app_grant.test", "app_level_permissions.#", "2"),
+					resource.TestCheckResourceAttr("googleplay_app_grant.test", "name",
+						"developers/"+unitDeveloperID+"/users/grace@example.com/grants/"+unitPackage),
+					func(*terraform.State) error {
+						// One users.create carrying the grant; never a create
+						// without permissions, and no separate grants.create.
+						if creates := requestsMatching(fake, `^POST .*/users\?`); len(creates) != 1 {
+							return fmt.Errorf("want exactly one users.create, got %v", creates)
+						}
+						if creates := requestsMatching(fake, `^POST .*/grants\?`); len(creates) != 0 {
+							return fmt.Errorf("the first grant must travel in users.create, got %v", creates)
+						}
+
+						user := fake.User("grace@example.com")
+						if user == nil || len(user.Grants) != 1 || user.Grants[0].PackageName != unitPackage ||
+							len(user.Grants[0].AppLevelPermissions) != 2 {
+							return fmt.Errorf("the user was not created with its grant: %+v", user)
+						}
+						// The user's own settings travel with it.
+						if user.ExpirationTime != "2099-01-01T00:00:00Z" || len(user.DeveloperAccountPermissions) != 0 {
+							return fmt.Errorf("the user was created as %+v", user)
+						}
+
+						return nil
+					},
+				),
+			},
+			{
+				Config:   config,
+				PlanOnly: true,
+			},
+			{
+				// The user resource finished before the grant created the
+				// user, so what Google reports about it (access_state, partial)
+				// reaches state with the next refresh.
+				RefreshState: true,
+				Check:        resource.TestCheckResourceAttr("googleplay_user.test", "access_state", "INVITED"),
+			},
+			importSteps("googleplay_user.test")[0],
+			importSteps("googleplay_user.test")[1],
+			importSteps("googleplay_app_grant.test")[0],
+			importSteps("googleplay_app_grant.test")[1],
+		},
+	})
+}
+
+// Two grants for a user who does not exist yet: whichever runs first creates
+// the user with its grant, and the other adds its own to the user it finds.
+func TestAppGrantResource_twoGrantsForNewUser(t *testing.T) {
+	fake := newUnitFake(t)
+
+	config := fmt.Sprintf(`
+resource "googleplay_user" "test" {
+  email = "grace@example.com"
+}
+
+resource "googleplay_app_grant" "first" {
+  email                 = googleplay_user.test.email
+  package_name          = %q
+  app_level_permissions = ["CAN_VIEW_NON_FINANCIAL_DATA"]
+}
+
+resource "googleplay_app_grant" "second" {
+  email                 = googleplay_user.test.email
+  package_name          = "com.example.other"
+  app_level_permissions = ["CAN_MANAGE_TRACK_APKS", "CAN_MANAGE_TRACK_USERS"]
+}`, unitPackage)
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("googleplay_app_grant.first", "app_level_permissions.#", "1"),
+					resource.TestCheckResourceAttr("googleplay_app_grant.second", "app_level_permissions.#", "2"),
+					func(*terraform.State) error {
+						if creates := requestsMatching(fake, `^POST .*/users\?`); len(creates) != 1 {
+							return fmt.Errorf("want exactly one users.create, got %v", creates)
+						}
+						if creates := requestsMatching(fake, `^POST .*/grants\?`); len(creates) != 1 {
+							return fmt.Errorf("want exactly one grants.create for the other grant, got %v", creates)
+						}
+
+						user := fake.User("grace@example.com")
+						if user == nil || len(user.Grants) != 2 {
+							return fmt.Errorf("the user does not hold both grants: %+v", user)
+						}
+
+						return nil
+					},
+				),
+			},
+			{
+				Config:   config,
+				PlanOnly: true,
+			},
+			{
+				// Dropping one grant leaves the user and the other grant.
+				Config: fmt.Sprintf(`
+resource "googleplay_user" "test" {
+  email = "grace@example.com"
+}
+
+resource "googleplay_app_grant" "first" {
+  email                 = googleplay_user.test.email
+  package_name          = %q
+  app_level_permissions = ["CAN_VIEW_NON_FINANCIAL_DATA"]
+}`, unitPackage),
+				Check: func(*terraform.State) error {
+					user := fake.User("grace@example.com")
+					if user == nil || len(user.Grants) != 1 || user.Grants[0].PackageName != unitPackage {
+						return fmt.Errorf("unexpected user after dropping a grant: %+v", user)
+					}
+
+					return nil
+				},
+			},
+		},
+	})
+}
+
+// A user with no permission and no grant cannot exist. Nothing is called, the
+// apply warns, and the next plan still proposes the user.
+func TestUserResource_permissionlessWithoutGrant(t *testing.T) {
+	fake := newUnitFake(t)
+
+	const config = `
+resource "googleplay_user" "test" {
+  email = "grace@example.com"
+}`
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:             config,
+				ExpectNonEmptyPlan: true,
+				Check: func(*terraform.State) error {
+					if writes := requestsMatching(fake, `^(POST|PATCH|PUT) `); len(writes) != 0 {
+						return fmt.Errorf("a permissionless user must not be sent to the API: %v", writes)
+					}
+					if fake.User("grace@example.com") != nil {
+						return fmt.Errorf("the user exists")
+					}
+
+					return nil
+				},
+			},
+			{
+				// Giving it a permission creates it for real.
+				Config: `
+resource "googleplay_user" "test" {
+  email                         = "grace@example.com"
+  developer_account_permissions = ["CAN_VIEW_APP_QUALITY_GLOBAL"]
+}`,
+				Check: func(*terraform.State) error {
+					if user := fake.User("grace@example.com"); user == nil || len(user.DeveloperAccountPermissions) != 1 {
+						return fmt.Errorf("the user was not created: %+v", user)
+					}
+
+					return nil
+				},
+			},
+		},
+	})
+}
+
+// A grant for an address nobody declared does not create a user by itself.
+func TestAppGrantResource_undeclaredUser(t *testing.T) {
+	fake := newUnitFake(t)
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []resource.TestStep{{
+			Config: fmt.Sprintf(`
+resource "googleplay_app_grant" "test" {
+  email                 = "nobody@example.com"
+  package_name          = %q
+  app_level_permissions = ["CAN_VIEW_NON_FINANCIAL_DATA"]
+}`, unitPackage),
+			ExpectError: regexp.MustCompile(`User not found`),
+		}},
+	})
+
+	if fake.User("nobody@example.com") != nil {
+		t.Error("a grant created a user that no googleplay_user declares")
+	}
 }
 
 // --- acceptance --------------------------------------------------------------

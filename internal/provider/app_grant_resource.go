@@ -9,6 +9,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -72,7 +73,11 @@ func (r *appGrantResource) Metadata(_ context.Context, req resource.MetadataRequ
 func (r *appGrantResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		MarkdownDescription: "The permissions one user of the developer account holds on one app. " +
-			"The user must already be in the account: declare it with `googleplay_user` and refer to its `email`.\n\n" +
+			"Declare the user with `googleplay_user` and refer to its `email`.\n\n" +
+			"A user that `googleplay_user` declares with no account-wide permission does not exist until its " +
+			"first grant: Google Play creates a user only together with a permission. Creating the first grant " +
+			"of such a user invites the user and grants the permission in a single call; further grants are " +
+			"added to the user as usual. Grants of one user are applied one at a time.\n\n" +
 			"The API has no call that reads one grant, and its user list cannot be paged, so every read fetches " +
 			"all of the account's users in one request. " +
 			"Requires the provider's `developer_id`.",
@@ -170,6 +175,80 @@ func (r *appGrantResource) grantName(state appGrantModel) (string, error) {
 	return r.client.GrantName(state.Email.ValueString(), state.PackageName.ValueString())
 }
 
+// createGrant grants the permissions, creating the user with them when the
+// user is declared but could not be created without a permission. It reports
+// whether it succeeded.
+//
+// One user is handled at a time. Of two grants for a user who does not exist
+// yet, whichever runs first creates the user with its grant, and the second
+// finds the user and adds its own.
+func (r *appGrantResource) createGrant(ctx context.Context, email string, grant *androidpublisher.Grant, diags *diag.Diagnostics) bool {
+	defer r.client.LockUser(email)()
+
+	user, err := r.client.FindUser(ctx, email)
+	if err != nil {
+		addAPIError(diags, "Unable to create the app grant", err)
+
+		return false
+	}
+
+	if user != nil {
+		// Address the user by the name the API holds, which may differ in case
+		// from the configured address.
+		parent := user.Name
+		if parent == "" {
+			if parent, err = r.client.UserName(email); err != nil {
+				addAPIError(diags, "Unable to create the app grant", err)
+
+				return false
+			}
+		}
+
+		if _, err := r.client.Service.Grants.Create(parent, grant).Context(ctx).Do(); err != nil {
+			addAPIError(diags, "Unable to create the app grant", err)
+
+			return false
+		}
+
+		return true
+	}
+
+	// The user does not exist. A googleplay_user with no account-wide
+	// permission waits for exactly this: Google creates a user only together
+	// with a permission, so the user and this grant are created in one call.
+	pending, declared := r.client.PendingUser(email)
+	if !declared {
+		diags.AddAttributeError(path.Root("email"), "User not found",
+			email+" is not a user of the developer account. Declare it with a googleplay_user resource and "+
+				"refer to that resource's email, so that the user is created with this grant. (A user that a "+
+				"googleplay_user declared with no account-wide permission is created by its first grant; if "+
+				"this apply ran with -refresh=false, run it again with a refresh.)")
+
+		return false
+	}
+
+	parent, err := r.client.DeveloperParent()
+	if err != nil {
+		addAPIError(diags, "Unable to create the app grant", err)
+
+		return false
+	}
+
+	_, err = r.client.Service.Users.Create(parent, &androidpublisher.User{
+		Email:          pending.Email,
+		ExpirationTime: pending.ExpirationTime,
+		Grants:         []*androidpublisher.Grant{grant},
+	}).Context(ctx).Do()
+	if err != nil {
+		addAPIError(diags, "Unable to create the user with its app grant", err)
+
+		return false
+	}
+	r.client.ForgetPendingUser(email)
+
+	return true
+}
+
 func (r *appGrantResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan appGrantModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
@@ -177,32 +256,7 @@ func (r *appGrantResource) Create(ctx context.Context, req resource.CreateReques
 		return
 	}
 
-	// Address the user by the name the API holds, which may differ in case
-	// from the configured address, and say so plainly when there is no such
-	// user rather than passing on the API's less direct error.
-	user, err := r.client.FindUser(ctx, plan.Email.ValueString())
-	if err != nil {
-		addAPIError(&resp.Diagnostics, "Unable to create the app grant", err)
-
-		return
-	}
-	if user == nil {
-		resp.Diagnostics.AddAttributeError(path.Root("email"), "User not found",
-			plan.Email.ValueString()+" is not a user of the developer account. Declare it with a googleplay_user "+
-				"resource and refer to that resource's email, so that the user is created first.")
-
-		return
-	}
-
-	parent := user.Name
-	if parent == "" {
-		if parent, err = r.client.UserName(plan.Email.ValueString()); err != nil {
-			addAPIError(&resp.Diagnostics, "Unable to create the app grant", err)
-
-			return
-		}
-	}
-
+	email := plan.Email.ValueString()
 	grant := &androidpublisher.Grant{
 		PackageName:         plan.PackageName.ValueString(),
 		AppLevelPermissions: stringsFromSet(ctx, plan.AppLevelPermissions, &resp.Diagnostics),
@@ -211,9 +265,7 @@ func (r *appGrantResource) Create(ctx context.Context, req resource.CreateReques
 		return
 	}
 
-	if _, err := r.client.Service.Grants.Create(parent, grant).Context(ctx).Do(); err != nil {
-		addAPIError(&resp.Diagnostics, "Unable to create the app grant", err)
-
+	if !r.createGrant(ctx, email, grant, &resp.Diagnostics) {
 		return
 	}
 

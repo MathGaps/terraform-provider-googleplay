@@ -52,6 +52,67 @@ type Client struct {
 	// invalidates every other open edit of the same app, so edits of one app
 	// must not overlap.
 	editLocks sync.Map
+
+	// userLocks holds one mutex per user email. See LockUser.
+	userLocks sync.Map
+
+	// pendingUsers holds the users that are declared but could not be created
+	// yet, by lower-case email. See DeferUser.
+	pendingMu    sync.Mutex
+	pendingUsers map[string]PendingUser
+}
+
+// PendingUser is a user whose creation waits for its first grant.
+type PendingUser struct {
+	// Email is the address as configured.
+	Email string
+	// ExpirationTime is the configured expiry of the user's access, if any.
+	ExpirationTime string
+}
+
+// LockUser serializes work on one user, matched case-insensitively, and
+// returns the unlock function. Two grants for a user who does not exist yet
+// must not both try to create the user.
+func (c *Client) LockUser(email string) func() {
+	value, _ := c.userLocks.LoadOrStore(strings.ToLower(email), &sync.Mutex{})
+	mutex, _ := value.(*sync.Mutex)
+	mutex.Lock()
+
+	return mutex.Unlock
+}
+
+// DeferUser records a user that is declared with no account-wide permission.
+// Google refuses to create a user who holds no permission at all ("No
+// permissions set for this user"), so such a user can only come into being
+// together with a grant: the grant that is created first takes the pending
+// user and creates both in one call. The record lives for the life of the
+// provider process, which is one plan or apply.
+func (c *Client) DeferUser(user PendingUser) {
+	c.pendingMu.Lock()
+	defer c.pendingMu.Unlock()
+
+	if c.pendingUsers == nil {
+		c.pendingUsers = map[string]PendingUser{}
+	}
+	c.pendingUsers[strings.ToLower(user.Email)] = user
+}
+
+// PendingUser returns the deferred user with the given email, if there is one.
+func (c *Client) PendingUser(email string) (PendingUser, bool) {
+	c.pendingMu.Lock()
+	defer c.pendingMu.Unlock()
+
+	user, ok := c.pendingUsers[strings.ToLower(email)]
+
+	return user, ok
+}
+
+// ForgetPendingUser drops a deferred user, once created or no longer wanted.
+func (c *Client) ForgetPendingUser(email string) {
+	c.pendingMu.Lock()
+	defer c.pendingMu.Unlock()
+
+	delete(c.pendingUsers, strings.ToLower(email))
 }
 
 // NewClient builds a client from cfg. It does not call the API.

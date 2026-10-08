@@ -84,6 +84,13 @@ func (r *userResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 			"across the whole account. Per-app permissions are `googleplay_app_grant` resources.\n\n" +
 			"Creating the resource invites the address; destroying it removes all of the user's access to the " +
 			"developer account, including every per-app grant.\n\n" +
+			"~> **A user with no account-wide permission is created by its first grant.** Google Play refuses " +
+			"to create a user who holds no permission at all (`No permissions set for this user`). When " +
+			"`developer_account_permissions` is left out, creating this resource calls nothing: it records the " +
+			"user in state, with a warning, and the first `googleplay_app_grant` that refers to it invites the " +
+			"user and grants the permission in one call. Refer to this resource's `email` from the grant so " +
+			"that they are applied in that order. A user of this kind with no grant does not exist in Play " +
+			"Console, and every plan proposes to create it.\n\n" +
 			"The API has no call that reads one user, and its list cannot be paged, so every read fetches all " +
 			"of the account's users in one request. " +
 			"Requires the provider's `developer_id`.",
@@ -103,7 +110,8 @@ func (r *userResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 			},
 			"developer_account_permissions": schema.SetAttribute{
 				MarkdownDescription: "Permissions that apply to every app of the developer account. " +
-					"Leave it out for a user who only holds per-app grants. One or more of: " +
+					"Leave it out for a user who only holds per-app grants; such a user is created by its first " +
+					"`googleplay_app_grant`. One or more of: " +
 					oneOfDescription(developerAccountPermissions...) + ".",
 				ElementType: types.StringType,
 				Optional:    true,
@@ -124,7 +132,8 @@ func (r *userResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 			},
 			"access_state": schema.StringAttribute{
 				MarkdownDescription: "The state of the user's access: `INVITED`, `INVITATION_EXPIRED`, " +
-					"`ACCESS_GRANTED` or `ACCESS_EXPIRED`.",
+					"`ACCESS_GRANTED` or `ACCESS_EXPIRED`. Null until the next refresh for a user that was " +
+					"created by its first grant.",
 				Computed: true,
 				// Nothing this resource writes changes it; it is refreshed on read.
 				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
@@ -182,6 +191,93 @@ func (r *userResource) userName(state userModel) (string, error) {
 	return r.client.UserName(state.Email.ValueString())
 }
 
+// createOrDefer creates the user, or defers it when it has no account-wide
+// permission, and returns the state to record.
+//
+// Google refuses to create a user who would hold no permission at all: the
+// call must carry an account permission or a grant. A user declared with only
+// per-app grants is therefore not created here. It is recorded in state and
+// handed to the client as pending; the first googleplay_app_grant created for
+// it makes one users.create call with the grant in it.
+func (r *userResource) createOrDefer(ctx context.Context, plan userModel, diags *diag.Diagnostics) (userModel, bool) {
+	email := plan.Email.ValueString()
+
+	parent, err := r.client.DeveloperParent()
+	if err != nil {
+		addAPIError(diags, "Unable to create the user", err)
+
+		return userModel{}, false
+	}
+
+	permissions := stringsFromSet(ctx, plan.DeveloperAccountPermissions, diags)
+	if diags.HasError() {
+		return userModel{}, false
+	}
+
+	defer r.client.LockUser(email)()
+
+	if len(permissions) == 0 {
+		// No call creates this user, so nothing would refuse a second one:
+		// check, rather than silently adopt a user that exists.
+		existing, err := r.client.FindUser(ctx, email)
+		if err != nil {
+			addAPIError(diags, "Unable to create the user", err)
+
+			return userModel{}, false
+		}
+		if existing != nil {
+			diags.AddError("User already exists",
+				email+" is already a user of the developer account. Import it to manage it: "+existing.Email)
+
+			return userModel{}, false
+		}
+
+		r.client.DeferUser(play.PendingUser{Email: email, ExpirationTime: plan.ExpirationTime.ValueString()})
+
+		diags.AddWarning("User not created yet",
+			email+" has no developer_account_permissions, and Google Play creates a user only together with a "+
+				"permission. The user is recorded in state and will be invited when its first googleplay_app_grant "+
+				"is created, in the same call. If no googleplay_app_grant refers to this user, it does not exist "+
+				"in Play Console and the next plan proposes to create it again.")
+
+		return userModel{
+			ID:                          types.StringValue(email),
+			Email:                       plan.Email,
+			DeveloperAccountPermissions: plan.DeveloperAccountPermissions,
+			ExpirationTime:              plan.ExpirationTime,
+			Name:                        types.StringValue(parent + "/users/" + email),
+			AccessState:                 types.StringNull(),
+			Partial:                     types.BoolNull(),
+		}, true
+	}
+
+	created, err := r.client.Service.Users.Create(parent, &androidpublisher.User{
+		Email:                       email,
+		DeveloperAccountPermissions: permissions,
+		ExpirationTime:              plan.ExpirationTime.ValueString(),
+	}).Context(ctx).Do()
+	if err != nil {
+		addAPIError(diags, "Unable to create the user", err)
+
+		return userModel{}, false
+	}
+	r.client.ForgetPendingUser(email)
+
+	// The response is the created user, but only the list shows it as other
+	// reads will see it.
+	if listed, err := r.client.FindUser(ctx, email); err == nil && listed != nil {
+		created = listed
+	}
+	if created.Email == "" {
+		created.Email = email
+	}
+	if created.Name == "" {
+		created.Name = parent + "/users/" + created.Email
+	}
+
+	return flattenUser(created, plan, diags), true
+}
+
 func (r *userResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var plan userModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
@@ -189,43 +285,9 @@ func (r *userResource) Create(ctx context.Context, req resource.CreateRequest, r
 		return
 	}
 
-	parent, err := r.client.DeveloperParent()
-	if err != nil {
-		addAPIError(&resp.Diagnostics, "Unable to create the user", err)
-
-		return
+	if state, ok := r.createOrDefer(ctx, plan, &resp.Diagnostics); ok {
+		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 	}
-
-	user := &androidpublisher.User{
-		Email:                       plan.Email.ValueString(),
-		DeveloperAccountPermissions: stringsFromSet(ctx, plan.DeveloperAccountPermissions, &resp.Diagnostics),
-		ExpirationTime:              plan.ExpirationTime.ValueString(),
-	}
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	created, err := r.client.Service.Users.Create(parent, user).Context(ctx).Do()
-	if err != nil {
-		addAPIError(&resp.Diagnostics, "Unable to create the user", err)
-
-		return
-	}
-
-	// The response is the created user, but only the list shows it as other
-	// reads will see it.
-	if listed, err := r.client.FindUser(ctx, plan.Email.ValueString()); err == nil && listed != nil {
-		created = listed
-	}
-	if created.Email == "" {
-		created.Email = plan.Email.ValueString()
-	}
-	if created.Name == "" {
-		created.Name = parent + "/users/" + created.Email
-	}
-
-	state := flattenUser(created, plan, &resp.Diagnostics)
-	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
 func (r *userResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -256,6 +318,22 @@ func (r *userResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// A user deferred by an earlier apply and never given a grant is in state
+	// without existing. Updating it is creating it.
+	existing, err := r.client.FindUser(ctx, state.Email.ValueString())
+	if err != nil {
+		addAPIError(&resp.Diagnostics, "Unable to update the user", err)
+
+		return
+	}
+	if existing == nil {
+		if newState, ok := r.createOrDefer(ctx, plan, &resp.Diagnostics); ok {
+			resp.Diagnostics.Append(resp.State.Set(ctx, &newState)...)
+		}
+
 		return
 	}
 
@@ -328,6 +406,10 @@ func (r *userResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 		return
 	}
 
+	r.client.ForgetPendingUser(state.Email.ValueString())
+
+	// A 404 covers a deferred user that was never created, and a user Google
+	// removed with its last grant. Deleting a user removes its grants too.
 	if err := r.client.Service.Users.Delete(name).Context(ctx).Do(); err != nil && !play.IsNotFound(err) {
 		addAPIError(&resp.Diagnostics, "Unable to delete the user", err)
 	}

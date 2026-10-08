@@ -5,6 +5,7 @@ subcategory: ""
 description: |-
   A user of the Play Console developer account, with the permissions that apply across the whole account. Per-app permissions are googleplay_app_grant resources.
   Creating the resource invites the address; destroying it removes all of the user's access to the developer account, including every per-app grant.
+  ~> A user with no account-wide permission is created by its first grant. Google Play refuses to create a user who holds no permission at all (No permissions set for this user). When developer_account_permissions is left out, creating this resource calls nothing: it records the user in state, with a warning, and the first googleplay_app_grant that refers to it invites the user and grants the permission in one call. Refer to this resource's email from the grant so that they are applied in that order. A user of this kind with no grant does not exist in Play Console, and every plan proposes to create it.
   The API has no call that reads one user, and its list cannot be paged, so every read fetches all of the account's users in one request. Requires the provider's developer_id.
 ---
 
@@ -13,6 +14,8 @@ description: |-
 A user of the Play Console developer account, with the permissions that apply across the whole account. Per-app permissions are `googleplay_app_grant` resources.
 
 Creating the resource invites the address; destroying it removes all of the user's access to the developer account, including every per-app grant.
+
+~> **A user with no account-wide permission is created by its first grant.** Google Play refuses to create a user who holds no permission at all (`No permissions set for this user`). When `developer_account_permissions` is left out, creating this resource calls nothing: it records the user in state, with a warning, and the first `googleplay_app_grant` that refers to it invites the user and grants the permission in one call. Refer to this resource's `email` from the grant so that they are applied in that order. A user of this kind with no grant does not exist in Play Console, and every plan proposes to create it.
 
 The API has no call that reads one user, and its list cannot be paged, so every read fetches all of the account's users in one request. Requires the provider's `developer_id`.
 
@@ -42,12 +45,12 @@ resource "googleplay_user" "contractor" {
 
 ### Optional
 
-- `developer_account_permissions` (Set of String) Permissions that apply to every app of the developer account. Leave it out for a user who only holds per-app grants. One or more of: `CAN_SEE_ALL_APPS`, `CAN_VIEW_FINANCIAL_DATA_GLOBAL`, `CAN_MANAGE_PERMISSIONS_GLOBAL`, `CAN_EDIT_GAMES_GLOBAL`, `CAN_PUBLISH_GAMES_GLOBAL`, `CAN_REPLY_TO_REVIEWS_GLOBAL`, `CAN_MANAGE_PUBLIC_APKS_GLOBAL`, `CAN_MANAGE_TRACK_APKS_GLOBAL`, `CAN_MANAGE_TRACK_USERS_GLOBAL`, `CAN_MANAGE_PUBLIC_LISTING_GLOBAL`, `CAN_MANAGE_DRAFT_APPS_GLOBAL`, `CAN_CREATE_MANAGED_PLAY_APPS_GLOBAL`, `CAN_CHANGE_MANAGED_PLAY_SETTING_GLOBAL`, `CAN_MANAGE_ORDERS_GLOBAL`, `CAN_MANAGE_APP_CONTENT_GLOBAL`, `CAN_VIEW_NON_FINANCIAL_DATA_GLOBAL`, `CAN_VIEW_APP_QUALITY_GLOBAL`, `CAN_MANAGE_DEEPLINKS_GLOBAL`, `CAN_VIEW_CONNECTED_APPS_GLOBAL`, `CAN_EDIT_CONNECTED_APPS_GLOBAL`.
+- `developer_account_permissions` (Set of String) Permissions that apply to every app of the developer account. Leave it out for a user who only holds per-app grants; such a user is created by its first `googleplay_app_grant`. One or more of: `CAN_SEE_ALL_APPS`, `CAN_VIEW_FINANCIAL_DATA_GLOBAL`, `CAN_MANAGE_PERMISSIONS_GLOBAL`, `CAN_EDIT_GAMES_GLOBAL`, `CAN_PUBLISH_GAMES_GLOBAL`, `CAN_REPLY_TO_REVIEWS_GLOBAL`, `CAN_MANAGE_PUBLIC_APKS_GLOBAL`, `CAN_MANAGE_TRACK_APKS_GLOBAL`, `CAN_MANAGE_TRACK_USERS_GLOBAL`, `CAN_MANAGE_PUBLIC_LISTING_GLOBAL`, `CAN_MANAGE_DRAFT_APPS_GLOBAL`, `CAN_CREATE_MANAGED_PLAY_APPS_GLOBAL`, `CAN_CHANGE_MANAGED_PLAY_SETTING_GLOBAL`, `CAN_MANAGE_ORDERS_GLOBAL`, `CAN_MANAGE_APP_CONTENT_GLOBAL`, `CAN_VIEW_NON_FINANCIAL_DATA_GLOBAL`, `CAN_VIEW_APP_QUALITY_GLOBAL`, `CAN_MANAGE_DEEPLINKS_GLOBAL`, `CAN_VIEW_CONNECTED_APPS_GLOBAL`, `CAN_EDIT_CONNECTED_APPS_GLOBAL`.
 - `expiration_time` (String) When the user's access expires, as an RFC 3339 timestamp such as `2030-01-01T00:00:00Z`. It must be in the future whenever it is set. Leave it out for access that does not expire.
 
 ### Read-Only
 
-- `access_state` (String) The state of the user's access: `INVITED`, `INVITATION_EXPIRED`, `ACCESS_GRANTED` or `ACCESS_EXPIRED`.
+- `access_state` (String) The state of the user's access: `INVITED`, `INVITATION_EXPIRED`, `ACCESS_GRANTED` or `ACCESS_EXPIRED`. Null until the next refresh for a user that was created by its first grant.
 - `id` (String) The user's email address.
 - `name` (String) The API resource name, `developers/{developer}/users/{email}`.
 - `partial` (Boolean) Whether the user holds permissions the API does not show, which is the case for the account owner and when the credentials cannot manage every app. Such a user cannot be fully managed here.

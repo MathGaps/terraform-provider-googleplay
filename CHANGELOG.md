@@ -6,6 +6,24 @@ release notes, and refuses to release a version whose heading still says
     ## X.Y.Z (October 9, 2026)
 -->
 
+## 0.1.1 (October 8, 2026)
+
+BUG FIXES:
+
+* **A user who holds only per-app grants can now be created.** Google Play
+  refuses to create a user with no permission at all (`Error 400: No
+  permissions set for this user.`), and the provider created the user first
+  and its grant second, so a `googleplay_user` without
+  `developer_account_permissions` plus a `googleplay_app_grant` could be
+  imported and never created. Creating such a `googleplay_user` now calls
+  nothing: it records the user in state, with a warning, and the first
+  `googleplay_app_grant` that refers to it invites the user and grants the
+  permission in a single `users.create` call. Further grants of the same user
+  are added as before, and the grants of one user are applied one at a time,
+  so the order they run in does not matter. A user declared this way with no
+  grant does not exist in Play Console, and each plan proposes to create it.
+  A user with account-wide permissions is created as before.
+
 ## 0.1.0 (October 8, 2026)
 
 The first release.
