@@ -1,0 +1,23 @@
+# See GitHub's documentation for more information on this file:
+# https://docs.github.com/en/code-security/supply-chain-security/keeping-your-dependencies-updated-automatically/configuration-options-for-dependency-updates
+version: 2
+updates:
+  # The Terraform plugin framework and its transitive tree move often enough
+  # that daily individual pull requests are noise on a provider this size.
+  # Weekly, grouped by ecosystem, keeps the security-relevant bumps visible.
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      go-dependencies:
+        patterns:
+          - "*"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"

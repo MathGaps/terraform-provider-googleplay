@@ -1,0 +1,71 @@
+# Visit https://goreleaser.com for documentation on how to customize this
+# behavior.
+version: 2
+
+# The registry requires the release artifacts to be named
+# terraform-provider-googleplay_<version>_<os>_<arch>.zip. GoReleaser would
+# otherwise infer the project name from the checkout directory, so pin it.
+project_name: terraform-provider-googleplay
+
+before:
+  hooks:
+    - go mod tidy
+builds:
+  # Only the provider binary is released. The registry ingests a release by
+  # matching every entry in SHA256SUMS against the expected artifact names, so
+  # anything else built here would fail ingestion.
+- main: .
+  env:
+    # goreleaser does not work with CGO, and it would complicate use in CI
+    # systems where libraries cannot be installed.
+    - CGO_ENABLED=0
+  mod_timestamp: '{{ .CommitTimestamp }}'
+  flags:
+    - -trimpath
+  ldflags:
+    - '-s -w -X main.version={{.Version}}'
+  goos:
+    - freebsd
+    - windows
+    - linux
+    - darwin
+  goarch:
+    - amd64
+    - '386'
+    - arm
+    - arm64
+  ignore:
+    - goos: darwin
+      goarch: '386'
+  binary: '{{ .ProjectName }}_v{{ .Version }}'
+archives:
+- formats: [zip]
+  name_template: '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+checksum:
+  extra_files:
+    - glob: 'terraform-registry-manifest.json'
+      name_template: '{{ .ProjectName }}_{{ .Version }}_manifest.json'
+  name_template: '{{ .ProjectName }}_{{ .Version }}_SHA256SUMS'
+  algorithm: sha256
+signs:
+  - artifacts: checksum
+    args:
+      # --batch: the release workflow is not interactive.
+      - "--batch"
+      - "--local-user"
+      - "{{ .Env.GPG_FINGERPRINT }}" # set by the release workflow from the imported key
+      - "--output"
+      - "${signature}"
+      - "--detach-sign"
+      - "${artifact}"
+release:
+  extra_files:
+    - glob: 'terraform-registry-manifest.json'
+      name_template: '{{ .ProjectName }}_{{ .Version }}_manifest.json'
+  # If you want to manually examine the release before it is live, uncomment this line:
+  # draft: true
+# No changelog block: `--release-notes` in the release workflow supplies the
+# body from CHANGELOG.md, and GoReleaser loads that file during the changelog
+# step. `disable: true` here skips the step -- and with it the file, silently
+# publishing an empty release body. Omitting the block leaves the step enabled;
+# it does not generate a commit list of its own when --release-notes is given.
