@@ -47,6 +47,10 @@ type Server struct {
 	// its place, for app-level and account-level permissions alike. It starts
 	// with the one replacement observed against the live API.
 	Expansions map[string][]string
+
+	// pageLimit, when positive, caps the page of every list that pages. See
+	// SetPageLimit.
+	pageLimit int
 }
 
 type app struct {
@@ -121,6 +125,17 @@ func New(packageNames ...string) *Server {
 	s.Server = httptest.NewServer(http.HandlerFunc(s.serve))
 
 	return s
+}
+
+// SetPageLimit caps the page of every list that pages at n items, whatever
+// page size the request asks for. The API documents that it "may return fewer
+// than" the page size, so a client has to follow the page tokens; this makes
+// it.
+func (s *Server) SetPageLimit(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.pageLimit = n
 }
 
 // Requests returns every request received so far as "METHOD path?query".
@@ -748,6 +763,9 @@ func mergeBasePlans(existing, incoming []*androidpublisher.BasePlan) ([]*android
 }
 
 func (s *Server) routeSubscriptions(r *http.Request, a *app, packageName string, parts []string, body []byte) (any, *apiError) {
+	if len(parts) == 0 && r.Method == http.MethodGet {
+		return listSubscriptions(r, a, s.pageLimit)
+	}
 	if len(parts) == 0 {
 		if r.Method != http.MethodPost {
 			return nil, notFound("unknown path %s %s", r.Method, r.URL.Path)
@@ -772,6 +790,10 @@ func (s *Server) routeSubscriptions(r *http.Request, a *app, packageName string,
 
 	productID := parts[0]
 	sub, exists := a.subscriptions[productID]
+
+	if len(parts) >= 4 && parts[1] == "basePlans" && parts[3] == "offers" {
+		return s.routeOffers(r, a, packageName, productID, parts[2], parts[4:], body)
+	}
 
 	if len(parts) >= 4 && parts[1] == "basePlans" && parts[3] == "offers" {
 		return s.routeOffers(r, a, packageName, productID, parts[2], parts[4:], body)
@@ -908,6 +930,29 @@ func (s *Server) storeSubscription(a *app, packageName, productID string, patch 
 	return clone(current), nil
 }
 
+// listSubscriptions pages through the subscriptions of the app in product id
+// order. showArchived is not read: the client documents it as "Deprecated:
+// subscription archiving is not supported".
+func listSubscriptions(r *http.Request, a *app, limit int) (any, *apiError) {
+	ids := make([]string, 0, len(a.subscriptions))
+	for id := range a.subscriptions {
+		ids = append(ids, id)
+	}
+	slices.Sort(ids)
+
+	page, next, apiErr := pageOf(r, len(ids), limit)
+	if apiErr != nil {
+		return nil, apiErr
+	}
+
+	resp := &androidpublisher.ListSubscriptionsResponse{NextPageToken: next}
+	for _, id := range ids[page[0]:page[1]] {
+		resp.Subscriptions = append(resp.Subscriptions, clone(a.subscriptions[id]))
+	}
+
+	return resp, nil
+}
+
 // --- subscription offers -----------------------------------------------------
 
 // dropOffers forgets the offers of a deleted subscription, or of one of its
@@ -1009,7 +1054,7 @@ func validatePhasePrice(phase int, region string, price, absolute bool, relative
 
 func (s *Server) routeOffers(r *http.Request, a *app, packageName, productID, basePlanID string, parts []string, body []byte) (any, *apiError) {
 	if len(parts) == 0 && r.Method == http.MethodGet {
-		return listOffers(r, a, productID, basePlanID)
+		return listOffers(r, a, productID, basePlanID, s.pageLimit)
 	}
 
 	sub, exists := a.subscriptions[productID]
@@ -1174,7 +1219,7 @@ func (a *app) createOffer(plan *androidpublisher.BasePlan, packageName, productI
 // listOffers pages through the offers of a base plan, of a subscription (base
 // plan "-") or of the app (product and base plan "-"), 50 at a time unless
 // the request asks for up to 1000.
-func listOffers(r *http.Request, a *app, productID, basePlanID string) (any, *apiError) {
+func listOffers(r *http.Request, a *app, productID, basePlanID string, limit int) (any, *apiError) {
 	// "Must be specified as '-' if product_id is specified as '-'."
 	if productID == "-" && basePlanID != "-" {
 		return nil, badRequest("basePlanId must be - when productId is -")
@@ -1197,7 +1242,7 @@ func listOffers(r *http.Request, a *app, productID, basePlanID string) (any, *ap
 	}
 	slices.Sort(keys)
 
-	page, next, apiErr := pageOf(r, len(keys))
+	page, next, apiErr := pageOf(r, len(keys), limit)
 	if apiErr != nil {
 		return nil, apiErr
 	}
@@ -1212,8 +1257,8 @@ func listOffers(r *http.Request, a *app, productID, basePlanID string) (any, *ap
 
 // pageOf reads pageSize and pageToken and returns the [start, end) of the page
 // within n items and the token of the next page, if any. The token is the
-// offset of the next page: opaque to a client.
-func pageOf(r *http.Request, n int) ([2]int, string, *apiError) {
+// offset of the next page: opaque to a client. A positive limit caps the page.
+func pageOf(r *http.Request, n, limit int) ([2]int, string, *apiError) {
 	query := r.URL.Query()
 
 	size := 50
@@ -1225,6 +1270,10 @@ func pageOf(r *http.Request, n int) ([2]int, string, *apiError) {
 		if parsed > 0 {
 			size = min(parsed, 1000)
 		}
+	}
+
+	if limit > 0 {
+		size = min(size, limit)
 	}
 
 	start := 0
