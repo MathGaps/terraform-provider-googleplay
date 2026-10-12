@@ -6,7 +6,7 @@ release notes, and refuses to release a version whose heading still says
     ## X.Y.Z (October 9, 2026)
 -->
 
-## Unreleased
+## 0.2.0 (October 12, 2026)
 
 FEATURES:
 
