@@ -1,8 +1,6 @@
 module github.com/MathGaps/terraform-provider-googleplay
 
-go 1.26.0
-
-toolchain go1.26.8
+go 1.26.9
 
 require (
 	github.com/hashicorp/terraform-plugin-framework v1.19.0
@@ -71,7 +69,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.45.0 // indirect
 	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/mod v0.41.0 // indirect
-	golang.org/x/net v0.59.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/oauth2 v0.37.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
