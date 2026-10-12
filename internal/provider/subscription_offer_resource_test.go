@@ -263,38 +263,53 @@ func TestSubscriptionOfferResource_activeIsRetired(t *testing.T) {
 	})
 }
 
-// An offer whose read after create fails stays in state, untainted: its id can
-// never be used again, so an offer Terraform forgot -- or tainted and planned to
-// replace -- would have to be created a second time, which Google Play refuses.
-func TestSubscriptionOfferResource_readAfterCreateFails(t *testing.T) {
-	fake := newUnitFake(t)
-	putOfferSubscription(fake, "pro")
-	fake.FailNext("GET", `/offers/stranded$`, 403, "PERMISSION_DENIED")
+// A step that fails after the offer was created leaves it in state, untainted,
+// as configured: its id can never be used again, so an offer Terraform forgot,
+// tainted, or refused as an inconsistent result would have to be created a
+// second time, which Google Play refuses.
+func TestSubscriptionOfferResource_failureAfterCreate(t *testing.T) {
+	for name, tc := range map[string]struct {
+		method, path string
+		// pending is whether the step that failed is left for the next apply.
+		pending bool
+	}{
+		"the read after create":       {"GET", `/offers/stranded$`, false},
+		"the activation after create": {"POST", `/offers/stranded:activate$`, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := newUnitFake(t)
+			putOfferSubscription(fake, "pro")
+			fake.FailNext(tc.method, tc.path, 403, "PERMISSION_DENIED")
 
-	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: testProviderFactories,
-		Steps: []resource.TestStep{
-			{
-				// The read fails; the create is reported as a warning.
-				Config: offerConfig("stranded", "DRAFT", "4.50", ""),
-			},
-			{
-				// The same configuration again: a forgotten or tainted offer would
-				// be created a second time, and the fake refuses a taken id.
-				Config: offerConfig("stranded", "DRAFT", "4.50", ""),
-				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr(offerName, "id", unitPackage+"/pro/monthly/stranded"),
-					func(*terraform.State) error {
-						if creates := requestsMatching(fake, `^POST .*/offers\?.*offerId=stranded`); len(creates) != 1 {
-							return fmt.Errorf("the offer was created %d times, want once: %v", len(creates), creates)
-						}
-
-						return nil
+			resource.UnitTest(t, resource.TestCase{
+				ProtoV6ProviderFactories: testProviderFactories,
+				Steps: []resource.TestStep{
+					{
+						// The failure is a warning; what is left shows in the next plan.
+						Config:             offerConfig("stranded", "ACTIVE", "4.50", ""),
+						ExpectNonEmptyPlan: tc.pending,
 					},
-				),
-			},
-		},
-	})
+					{
+						// The same configuration again finishes the job in place: a
+						// forgotten or tainted offer would be created a second time,
+						// and the fake refuses a taken id.
+						Config: offerConfig("stranded", "ACTIVE", "4.50", ""),
+						Check: resource.ComposeAggregateTestCheckFunc(
+							resource.TestCheckResourceAttr(offerName, "state", "ACTIVE"),
+							checkOffer(fake, "stranded", "ACTIVE"),
+							func(*terraform.State) error {
+								if creates := requestsMatching(fake, `^POST .*/offers\?.*offerId=stranded`); len(creates) != 1 {
+									return fmt.Errorf("the offer was created %d times, want once: %v", len(creates), creates)
+								}
+
+								return nil
+							},
+						),
+					},
+				},
+			})
+		})
+	}
 }
 
 // A draft offer is really deleted, and its id cannot be used again.

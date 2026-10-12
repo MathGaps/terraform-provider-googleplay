@@ -630,16 +630,16 @@ func (r *oneTimeProductResource) Create(ctx context.Context, req resource.Create
 		// the create response; the next refresh reads the rest.
 		created.PackageName, created.ProductId = desired.PackageName, desired.ProductId
 		state = flattenOneTimeProduct(ctx, created, plan, &resp.Diagnostics)
-		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
-		addCreatedWarning(&resp.Diagnostics, "Unable to read the one-time product after creating it", err)
+		settleCreate(ctx, req, resp, &state, "Unable to read the one-time product after creating it", err)
+
+		return
+	}
+	if stateErr != nil {
+		settleCreate(ctx, req, resp, &state, "Unable to set the state of a purchase option", stateErr)
 
 		return
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
-
-	if stateErr != nil {
-		addCreatedWarning(&resp.Diagnostics, "Unable to set the state of a purchase option", stateErr)
-	}
 }
 
 func (r *oneTimeProductResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {

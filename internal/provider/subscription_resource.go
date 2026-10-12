@@ -416,16 +416,16 @@ func (r *subscriptionResource) Create(ctx context.Context, req resource.CreateRe
 		// from the create response; the next refresh reads the rest.
 		created.PackageName, created.ProductId = desired.PackageName, desired.ProductId
 		state = flattenSubscription(ctx, created, plan, &resp.Diagnostics)
-		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
-		addCreatedWarning(&resp.Diagnostics, "Unable to read the subscription after creating it", err)
+		settleCreate(ctx, req, resp, &state, "Unable to read the subscription after creating it", err)
+
+		return
+	}
+	if stateErr != nil {
+		settleCreate(ctx, req, resp, &state, "Unable to set the state of a base plan", stateErr)
 
 		return
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
-
-	if stateErr != nil {
-		addCreatedWarning(&resp.Diagnostics, "Unable to set the state of a base plan", stateErr)
-	}
 }
 
 func (r *subscriptionResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {

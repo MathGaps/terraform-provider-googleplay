@@ -14,8 +14,11 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 
 	"github.com/MathGaps/terraform-provider-googleplay/internal/play"
 )
@@ -79,15 +82,46 @@ func addAPIError(diags *diag.Diagnostics, summary string, err error) {
 	diags.AddError(summary, play.ErrorDetail(err))
 }
 
-// addCreatedWarning reports a step that failed after a create succeeded. It is
-// a warning, not an error, on purpose: Terraform taints an object whose create
-// returned any error and plans its replacement, and replacing a product or an
-// offer means creating its id again, which Google Play refuses forever. As a
-// warning the object stays in state as it is, and the next plan finishes what
-// this step did not as an ordinary update.
-func addCreatedWarning(diags *diag.Diagnostics, summary string, err error) {
-	diags.AddWarning(summary, play.ErrorDetail(err)+
-		"\n\nIt was created and is in state as it stands. The next plan shows what is left to do, "+
+// settleCreate ends a create whose product, offer or option exists but a later
+// step failed. Two rules of Terraform core shape it:
+//
+//   - an error from a create taints the object and plans its replacement
+//     (maybeTainted), and replacing means creating the same id again, which
+//     Google Play refuses forever -- so the failure is a warning;
+//   - a create whose result differs from a known planned value is itself an
+//     error ("Provider produced inconsistent result after apply") -- so the
+//     state returned is the plan, every known value kept, with only its
+//     unknowns (the id, an unset state) filled from what the API reported.
+//
+// The next refresh then reads what Google Play really holds, and the next plan
+// finishes what this step did not, as an ordinary update.
+func settleCreate(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse, reported any, summary string, err error) {
+	known := tfsdk.State{Schema: resp.State.Schema, Raw: resp.State.Raw.Copy()}
+	resp.Diagnostics.Append(known.Set(ctx, reported)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	settled, transformErr := tftypes.Transform(req.Plan.Raw, func(path *tftypes.AttributePath, planned tftypes.Value) (tftypes.Value, error) {
+		if planned.IsKnown() {
+			return planned, nil
+		}
+		found, _, walkErr := tftypes.WalkAttributePath(known.Raw, path)
+		if value, ok := found.(tftypes.Value); walkErr == nil && ok && value.IsKnown() {
+			return value, nil
+		}
+
+		return tftypes.NewValue(planned.Type(), nil), nil
+	})
+	if transformErr != nil {
+		resp.Diagnostics.AddError("Unable to record what was created", transformErr.Error())
+
+		return
+	}
+	resp.State.Raw = settled
+
+	resp.Diagnostics.AddWarning(summary, play.ErrorDetail(err)+
+		"\n\nIt was created, and is in state as configured. The next plan shows what is left to do, "+
 		"and the next apply does it.")
 }
 

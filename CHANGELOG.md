@@ -28,8 +28,9 @@ BUG FIXES:
   state configured -- was an error, and Terraform taints an object whose create returns one and
   plans its replacement. Replacing it means creating its id again, which Google Play refuses
   forever. These are now warnings: `googleplay_subscription`, `googleplay_one_time_product` and
-  `googleplay_subscription_offer` keep what was created in state, and the next apply finishes the
-  job as an ordinary update.
+  `googleplay_subscription_offer` keep what was created in state as configured (Terraform refuses a
+  create whose result differs from the plan), the next refresh reads what Google Play holds, and
+  the next apply finishes the job as an ordinary update.
 
 ## 0.1.1 (October 8, 2026)
 
