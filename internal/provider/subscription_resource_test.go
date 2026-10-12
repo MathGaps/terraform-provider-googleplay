@@ -295,6 +295,47 @@ func TestSubscriptionResource_lifecycle(t *testing.T) {
 }
 
 // A subscription whose base plans were never activated is really deleted.
+// A step that fails after the subscription was created leaves it in state,
+// untainted, as configured: its product id can never be used again.
+func TestSubscriptionResource_failureAfterCreate(t *testing.T) {
+	for name, tc := range map[string]struct {
+		method, path string
+		pending      bool
+	}{
+		"the read after create":                 {"GET", `/subscriptions/stranded$`, false},
+		"a base plan's activation after create": {"POST", `/basePlans/monthly:activate$`, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := newUnitFake(t)
+			fake.FailNext(tc.method, tc.path, 403, "PERMISSION_DENIED")
+			config := subscriptionConfig(unitPackage, "stranded", "Stranded", "9.99", "ACTIVE", "DRAFT", "")
+
+			resource.UnitTest(t, resource.TestCase{
+				ProtoV6ProviderFactories: testProviderFactories,
+				Steps: []resource.TestStep{
+					{
+						Config:             config,
+						ExpectNonEmptyPlan: tc.pending,
+					},
+					{
+						Config: config,
+						Check: resource.ComposeAggregateTestCheckFunc(
+							resource.TestCheckResourceAttr(subscriptionName, "base_plans.monthly.state", "ACTIVE"),
+							func(*terraform.State) error {
+								if creates := requestsMatching(fake, `^POST .*/subscriptions\?.*productId=stranded`); len(creates) != 1 {
+									return fmt.Errorf("the subscription was created %d times, want once: %v", len(creates), creates)
+								}
+
+								return nil
+							},
+						),
+					},
+				},
+			})
+		})
+	}
+}
+
 func TestSubscriptionResource_draftIsDeleted(t *testing.T) {
 	fake := newUnitFake(t)
 

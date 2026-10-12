@@ -76,6 +76,7 @@ track, and an edit committed by one run invalidates the other's.
 | `TestAccTrackTestersResource_basic` | Sets the tester groups of the test track to `GOOGLEPLAY_TEST_GROUP` | The track's group list is emptied. **Groups that were on the track before are not restored** |
 | `TestAccTrackResource_create` (opt-in) | The test track | **The track stays forever** |
 | `TestAccSubscriptionResource_basic` | A subscription `tfacc_sub_<random>` with one draft base plan | Deleted. **The product id stays reserved** |
+| `TestAccSubscriptionOfferResource_basic` | A subscription `tfacc_offer_<random>` with one draft auto-renewing base plan, and a draft free-trial offer `trial` on it | Both deleted, the offer first. **The product id stays reserved**, and so, by Play Console's help, does the offer id |
 | `TestAccOneTimeProductResource_basic` | A one-time product `tfacc_otp_<random>` with one draft purchase option | Deleted. **The product id stays reserved** |
 | `TestAccTracksDataSource_basic`, `TestAccConvertedRegionPricesDataSource_basic` | Nothing | Nothing |
 
@@ -84,15 +85,17 @@ track, and an edit committed by one run invalidates the other's.
 - **Product ids are reserved forever.** Google Play never frees the id of a
   subscription or one-time product, even after the product is deleted. The
   tests therefore use a random id every run, so a leftover never blocks the
-  next run, and every run permanently consumes two ids on the test app. There
+  next run, and every run permanently consumes three ids on the test app.
+  Offer ids are only unique within a base plan, so the offer test's fixed
+  `trial` is fresh on each new subscription. There
   is no cleanup for this and no known limit that it approaches.
 - **A custom track cannot be deleted.** The API has no call for it. The suite
   therefore uses one fixed track and never invents a name.
   `TestAccTrackResource_create` creates it and can succeed once per app, ever:
   a second run fails because the track exists. It runs only when
   `GOOGLEPLAY_TEST_CREATE_TRACK` is set (the workflow's `create_track` input).
-- **A base plan or purchase option that has been activated cannot be deleted,**
-  and neither can its subscription. No acceptance test activates anything, for
+- **A base plan, purchase option or subscription offer that has been activated
+  cannot be deleted,** and neither can its subscription. No acceptance test activates anything, for
   that reason: state transitions are covered by the unit tests against the
   fake.
 
@@ -106,7 +109,8 @@ Console:
 - **Testing → Closed testing → the test track → Testers**: remove the test
   group.
 - **Monetize → Products**: delete draft subscriptions and one-time products
-  named `tfacc_*`. Their ids stay reserved either way.
+  named `tfacc_*`, and the draft offers on them first. Their ids stay reserved
+  either way.
 
 ## What has not been verified
 
@@ -117,3 +121,11 @@ conservative, and it is the acceptance tests' job to confirm it: whether a
 patch may drop a base plan or purchase option (the provider never relies on
 it and uses the delete calls), the exact status code of a refused delete, and
 which values the server fills in for an omitted field.
+
+For subscription offers in particular, the fake assumes, and an acceptance run
+should confirm: that an offer created without `targeting` is read back without
+one (rather than with a rule the server picks); that `targeting` holds one rule,
+never both; that a patch may change the phases and targeting of an offer that
+has been activated; that a deleted draft offer's id is refused when used
+again, as Play Console's help says; and that the offer id has no format rule
+(the API documents none, so the provider refuses only slashes and whitespace).

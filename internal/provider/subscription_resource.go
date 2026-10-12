@@ -246,9 +246,9 @@ func (r *subscriptionResource) Schema(_ context.Context, _ resource.SchemaReques
 			"error, so retire it with `state = \"INACTIVE\"` and keep it declared. A subscription can be deleted " +
 			"only if none of its base plans was ever activated: destroying one that cannot be deleted " +
 			"deactivates its active base plans, removes it from state with a warning, and leaves it in Play Console.\n\n" +
-			"Subscription offers (free trials, introductory prices) are not managed yet. Changing the price of " +
-			"a region changes it for new subscribers; moving existing subscribers to it (`migratePrices`) is " +
-			"not managed either.",
+			"Subscription offers (free trials, introductory prices) are the `googleplay_subscription_offer` " +
+			"resource. Changing the price of a region changes it for new subscribers; moving existing " +
+			"subscribers to it (`migratePrices`) is not managed.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				MarkdownDescription: "`{package_name}/{product_id}`.",
@@ -412,15 +412,20 @@ func (r *subscriptionResource) Create(ctx context.Context, req resource.CreateRe
 
 	state, err := r.readInto(ctx, plan, &resp.Diagnostics)
 	if err != nil {
-		addAPIError(&resp.Diagnostics, "Unable to read the subscription after creating it", err)
+		// The product id is taken for good, so the subscription goes into state
+		// from the create response; the next refresh reads the rest.
+		created.PackageName, created.ProductId = desired.PackageName, desired.ProductId
+		state = flattenSubscription(ctx, created, plan, &resp.Diagnostics)
+		settleCreate(ctx, req, resp, &state, "Unable to read the subscription after creating it", err)
+
+		return
+	}
+	if stateErr != nil {
+		settleCreate(ctx, req, resp, &state, "Unable to set the state of a base plan", stateErr)
 
 		return
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
-
-	if stateErr != nil {
-		addAPIError(&resp.Diagnostics, "Unable to set the state of a base plan", stateErr)
-	}
 }
 
 func (r *subscriptionResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {

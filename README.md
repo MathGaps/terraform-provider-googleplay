@@ -34,6 +34,7 @@ that you fill from the [GitHub releases](https://github.com/MathGaps/terraform-p
 | [`googleplay_track`](docs/resources/track.md) | A custom closed testing track | `package_name/track` |
 | [`googleplay_track_testers`](docs/resources/track_testers.md) | The Google Groups that can test a track | `package_name/track` |
 | [`googleplay_subscription`](docs/resources/subscription.md) | A subscription: listings, tax settings, base plans and their regional prices | `package_name/product_id` |
+| [`googleplay_subscription_offer`](docs/resources/subscription_offer.md) | An offer on one base plan: a free trial, an introductory price or an upgrade discount, its phases and targeting | `package_name/product_id/base_plan_id/offer_id` |
 | [`googleplay_one_time_product`](docs/resources/one_time_product.md) | A one-time product: listings, tax settings, purchase options and their regional prices | `package_name/product_id` |
 
 | Data source | What it reads |
@@ -56,17 +57,19 @@ Some of this is the API's limit, and some is simply not written yet.
   nothing else. Testers added in Play Console as email lists are invisible to
   `googleplay_track_testers`: it neither shows nor changes them.
 - **Reusing a product id.** Google Play reserves the id of every subscription
-  and one-time product forever, even after the product is deleted.
+  and one-time product forever, even after the product is deleted. Play
+  Console's help says the same of an offer id.
 - **Deleting what has been sold.** A base plan can be deleted only while it is
   a draft, and a subscription only if none of its base plans was ever
   activated. Retire a base plan with `state = "INACTIVE"`. Destroying a
   subscription that cannot be deleted deactivates its base plans and removes it
-  from state, with a warning.
+  from state, with a warning. A subscription offer can likewise be deleted
+  only while it is a draft; destroying one that has been activated deactivates
+  it and removes it from state, with a warning.
 
 **Not yet:**
 
-- Subscription offers (free trials, introductory prices) and offers on a
-  one-time product's purchase options.
+- Offers on a one-time product's purchase options.
 - Migrating existing subscribers to a new price (`migratePrices`). Changing a
   regional price changes it for new subscribers.
 - Releases. Builds and rollouts belong to a release pipeline, and
@@ -116,7 +119,7 @@ provider "googleplay" {
    |---|---|
    | `googleplay_user`, `googleplay_app_grant` | Admin (all permissions) on the account |
    | `googleplay_track`, `googleplay_track_testers` | Release apps to testing tracks, and Manage testing tracks and edit tester lists |
-   | `googleplay_subscription`, `googleplay_one_time_product`, `googleplay_converted_region_prices` | Manage store presence |
+   | `googleplay_subscription`, `googleplay_subscription_offer`, `googleplay_one_time_product`, `googleplay_converted_region_prices` | Manage store presence |
    | `googleplay_tracks` | View app information |
 
    Google does not publish which permission each API method checks, so treat

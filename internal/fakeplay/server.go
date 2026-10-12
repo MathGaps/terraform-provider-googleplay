@@ -8,7 +8,9 @@
 // It models the behaviour the provider depends on: edits that only take effect
 // on commit, a commit invalidating the app's other open edits, products whose
 // state changes only through the dedicated calls, and the defaults the server
-// fills in. It is not a faithful emulation of everything else.
+// fills in, and the rules the API documents for refusing a request (deleting
+// what has been published, reusing an id). It is not a faithful emulation of
+// everything else.
 package fakeplay
 
 import (
@@ -17,7 +19,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -36,6 +40,8 @@ type Server struct {
 	apps     map[string]*app
 	requests []string
 	nextEdit int
+	// failures are the one-shot errors armed by FailNext, in arming order.
+	failures []failure
 
 	// Expansions maps a permission to the permissions the server stores in
 	// its place, for app-level and account-level permissions alike. It starts
@@ -49,6 +55,40 @@ type app struct {
 	edits         map[string]*edit
 	subscriptions map[string]*androidpublisher.Subscription
 	products      map[string]*androidpublisher.OneTimeProduct
+	// offers holds the subscription offers by offerKey.
+	offers map[string]*androidpublisher.SubscriptionOffer
+	// retiredOffers holds the offerKey of every offer ever deleted. Play
+	// Console's help says an offer id cannot be reused, and the fake holds
+	// the API to that.
+	retiredOffers map[string]bool
+}
+
+// offerKey identifies an offer within an app.
+func offerKey(productID, basePlanID, offerID string) string {
+	return productID + "/" + basePlanID + "/" + offerID
+}
+
+// failure is one request FailNext arms to be answered with an error.
+type failure struct {
+	method string
+	path   *regexp.Regexp
+	err    *apiError
+}
+
+// FailNext makes the next request with this method whose path matches
+// pathPattern answer with code and status instead of being served, once. It
+// stands in for what a test cannot otherwise provoke: a call that fails after
+// an earlier one in the same operation succeeded. A 429 or 5xx is retried by
+// the client, so use a status it gives up on.
+func (s *Server) FailNext(method, pathPattern string, code int, status string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.failures = append(s.failures, failure{
+		method: method,
+		path:   regexp.MustCompile(pathPattern),
+		err:    &apiError{code, status, "failure armed by the test"},
+	})
 }
 
 // edit is a private copy of the app's tracks and testers.
@@ -74,6 +114,8 @@ func New(packageNames ...string) *Server {
 			edits:         map[string]*edit{},
 			subscriptions: map[string]*androidpublisher.Subscription{},
 			products:      map[string]*androidpublisher.OneTimeProduct{},
+			offers:        map[string]*androidpublisher.SubscriptionOffer{},
+			retiredOffers: map[string]bool{},
 		}
 	}
 	s.Server = httptest.NewServer(http.HandlerFunc(s.serve))
@@ -167,6 +209,23 @@ func (s *Server) PutSubscription(sub *androidpublisher.Subscription) {
 	s.apps[sub.PackageName].subscriptions[sub.ProductId] = clone(sub)
 }
 
+// Offer returns a copy of a subscription offer, or nil.
+func (s *Server) Offer(packageName, productID, basePlanID, offerID string) *androidpublisher.SubscriptionOffer {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return clone(s.apps[packageName].offers[offerKey(productID, basePlanID, offerID)])
+}
+
+// PutOffer stores a subscription offer as if it had been created in Play
+// Console, exactly as given.
+func (s *Server) PutOffer(offer *androidpublisher.SubscriptionOffer) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.apps[offer.PackageName].offers[offerKey(offer.ProductId, offer.BasePlanId, offer.OfferId)] = clone(offer)
+}
+
 // OneTimeProduct returns a copy of a one-time product, or nil.
 func (s *Server) OneTimeProduct(packageName, productID string) *androidpublisher.OneTimeProduct {
 	s.mu.Lock()
@@ -233,7 +292,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, apiErr := s.route(r, body)
+	var result any
+	apiErr := s.armedFailure(r)
+	if apiErr == nil {
+		result, apiErr = s.route(r, body)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	if apiErr != nil {
@@ -253,6 +316,19 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		result = struct{}{}
 	}
 	_ = json.NewEncoder(w).Encode(result)
+}
+
+// armedFailure takes the first failure FailNext armed for this request.
+func (s *Server) armedFailure(r *http.Request) *apiError {
+	for i, f := range s.failures {
+		if f.method == r.Method && f.path.MatchString(r.URL.Path) {
+			s.failures = slices.Delete(s.failures, i, i+1)
+
+			return f.err
+		}
+	}
+
+	return nil
 }
 
 func decode[T any](body []byte) (*T, *apiError) {
@@ -697,6 +773,10 @@ func (s *Server) routeSubscriptions(r *http.Request, a *app, packageName string,
 	productID := parts[0]
 	sub, exists := a.subscriptions[productID]
 
+	if len(parts) >= 4 && parts[1] == "basePlans" && parts[3] == "offers" {
+		return s.routeOffers(r, a, packageName, productID, parts[2], parts[4:], body)
+	}
+
 	if len(parts) == 1 {
 		switch r.Method {
 		case http.MethodGet:
@@ -736,6 +816,7 @@ func (s *Server) routeSubscriptions(r *http.Request, a *app, packageName string,
 				}
 			}
 			delete(a.subscriptions, productID)
+			a.dropOffers(productID, "")
 
 			return nil, nil
 		}
@@ -774,6 +855,7 @@ func (s *Server) routeSubscriptions(r *http.Request, a *app, packageName string,
 			return nil, failedPrecondition("Base plan %s is not a draft and cannot be deleted.", basePlanID)
 		}
 		sub.BasePlans = slices.Delete(sub.BasePlans, index, index+1)
+		a.dropOffers(productID, basePlanID)
 
 		return nil, nil
 	}
@@ -824,6 +906,343 @@ func (s *Server) storeSubscription(a *app, packageName, productID string, patch 
 	a.subscriptions[productID] = current
 
 	return clone(current), nil
+}
+
+// --- subscription offers -----------------------------------------------------
+
+// dropOffers forgets the offers of a deleted subscription, or of one of its
+// base plans when basePlanID is set. Their ids stay retired.
+func (a *app) dropOffers(productID, basePlanID string) {
+	for key, offer := range a.offers {
+		if offer.ProductId == productID && (basePlanID == "" || offer.BasePlanId == basePlanID) {
+			a.retiredOffers[key] = true
+			delete(a.offers, key)
+		}
+	}
+}
+
+// validateOffer applies the rules the API documents for a subscription offer.
+func validateOffer(offer *androidpublisher.SubscriptionOffer) *apiError {
+	// "Must contain at least one and at most two entries."
+	if len(offer.Phases) < 1 || len(offer.Phases) > 2 {
+		return badRequest("an offer must have one or two phases, not %d", len(offer.Phases))
+	}
+	// "Must contain at least one entry."
+	if len(offer.RegionalConfigs) == 0 {
+		return badRequest("regionalConfigs must contain at least one entry")
+	}
+
+	regions := map[string]bool{}
+	for _, config := range offer.RegionalConfigs {
+		if config.RegionCode == "" || regions[config.RegionCode] {
+			return badRequest("regionalConfigs must name each region once")
+		}
+		regions[config.RegionCode] = true
+	}
+
+	for i, phase := range offer.Phases {
+		if phase.Duration == "" || phase.RecurrenceCount < 1 {
+			return badRequest("phase %d needs a duration and a recurrenceCount", i)
+		}
+		// "This list must contain exactly one entry for each region for which
+		// the subscription offer has a regional config."
+		seen := map[string]bool{}
+		for _, config := range phase.RegionalConfigs {
+			if !regions[config.RegionCode] || seen[config.RegionCode] {
+				return badRequest("phase %d must have exactly one regional config for each region of the offer", i)
+			}
+			seen[config.RegionCode] = true
+			if apiErr := validatePhasePrice(i, config.RegionCode, config.Price != nil, config.AbsoluteDiscount != nil,
+				config.RelativeDiscount, config.Free != nil); apiErr != nil {
+				return apiErr
+			}
+		}
+		if len(seen) != len(regions) {
+			return badRequest("phase %d must have exactly one regional config for each region of the offer", i)
+		}
+		if other := phase.OtherRegionsConfig; other != nil {
+			if apiErr := validatePhasePrice(i, "other regions", other.OtherRegionsPrices != nil, other.AbsoluteDiscounts != nil,
+				other.RelativeDiscount, other.Free != nil); apiErr != nil {
+				return apiErr
+			}
+		}
+	}
+
+	if targeting := offer.Targeting; targeting != nil {
+		// "Only allows 'this subscription' and 'any subscription in app'."
+		if rule := targeting.AcquisitionRule; rule != nil {
+			if rule.Scope == nil || rule.Scope.SpecificSubscriptionInApp != "" ||
+				(rule.Scope.ThisSubscription == nil) == (rule.Scope.AnySubscriptionInApp == nil) {
+				return badRequest("an acquisition rule's scope must be this subscription or any subscription in the app")
+			}
+		}
+		// "Only allows 'this subscription' and 'specific subscription in app'."
+		if rule := targeting.UpgradeRule; rule != nil {
+			if rule.Scope == nil || rule.Scope.AnySubscriptionInApp != nil ||
+				(rule.Scope.ThisSubscription == nil) == (rule.Scope.SpecificSubscriptionInApp == "") {
+				return badRequest("an upgrade rule's scope must be this subscription or a specific subscription in the app")
+			}
+		}
+	}
+
+	return nil
+}
+
+// validatePhasePrice requires exactly one way of pricing a phase, and a
+// relative discount "strictly larger than 0 and strictly smaller than 1".
+func validatePhasePrice(phase int, region string, price, absolute bool, relative float64, free bool) *apiError {
+	set := 0
+	for _, isSet := range []bool{price, absolute, relative != 0, free} {
+		if isSet {
+			set++
+		}
+	}
+	if set != 1 {
+		return badRequest("phase %d in %s must set exactly one of price, absoluteDiscount, relativeDiscount and free", phase, region)
+	}
+	if relative != 0 && (relative <= 0 || relative >= 1) {
+		return badRequest("phase %d in %s: relativeDiscount must be strictly between 0 and 1", phase, region)
+	}
+
+	return nil
+}
+
+func (s *Server) routeOffers(r *http.Request, a *app, packageName, productID, basePlanID string, parts []string, body []byte) (any, *apiError) {
+	if len(parts) == 0 && r.Method == http.MethodGet {
+		return listOffers(r, a, productID, basePlanID)
+	}
+
+	sub, exists := a.subscriptions[productID]
+	if !exists {
+		return nil, notFound("Subscription not found: %s.", productID)
+	}
+	planIndex := slices.IndexFunc(sub.BasePlans, func(p *androidpublisher.BasePlan) bool { return p.BasePlanId == basePlanID })
+	if planIndex < 0 {
+		return nil, notFound("Base plan not found: %s.", basePlanID)
+	}
+
+	if len(parts) == 0 {
+		if r.Method != http.MethodPost {
+			return nil, notFound("unknown path %s %s", r.Method, r.URL.Path)
+		}
+		if apiErr := requireRegionsVersion(r); apiErr != nil {
+			return nil, apiErr
+		}
+		offerID := r.URL.Query().Get("offerId")
+		if offerID == "" {
+			return nil, badRequest("offerId is required")
+		}
+		offer, apiErr := decode[androidpublisher.SubscriptionOffer](body)
+		if apiErr != nil {
+			return nil, apiErr
+		}
+
+		return a.createOffer(sub.BasePlans[planIndex], packageName, productID, basePlanID, offerID, offer)
+	}
+	if len(parts) != 1 {
+		return nil, notFound("unknown path %s %s", r.Method, r.URL.Path)
+	}
+
+	offerID, action, _ := strings.Cut(parts[0], ":")
+	key := offerKey(productID, basePlanID, offerID)
+	offer, exists := a.offers[key]
+
+	switch {
+	case action == "" && r.Method == http.MethodGet:
+		if !exists {
+			return nil, notFound("Offer not found: %s.", offerID)
+		}
+
+		return clone(offer), nil
+	case action == "" && r.Method == http.MethodPatch:
+		if apiErr := requireRegionsVersion(r); apiErr != nil {
+			return nil, apiErr
+		}
+		patch, apiErr := decode[androidpublisher.SubscriptionOffer](body)
+		if apiErr != nil {
+			return nil, apiErr
+		}
+		if !exists {
+			// "If set to true, and the subscription offer ... doesn't exist,
+			// an offer will be created. If a new offer is created,
+			// update_mask is ignored."
+			if r.URL.Query().Get("allowMissing") != "true" {
+				return nil, notFound("Offer not found: %s.", offerID)
+			}
+
+			return a.createOffer(sub.BasePlans[planIndex], packageName, productID, basePlanID, offerID, patch)
+		}
+		mask := maskFields(r)
+		if len(mask) == 0 {
+			return nil, badRequest("updateMask is required")
+		}
+
+		updated := clone(offer)
+		for _, field := range mask {
+			switch field {
+			case "phases":
+				updated.Phases = patch.Phases
+			case "regionalConfigs":
+				updated.RegionalConfigs = patch.RegionalConfigs
+			case "otherRegionsConfig":
+				updated.OtherRegionsConfig = patch.OtherRegionsConfig
+			case "targeting":
+				updated.Targeting = patch.Targeting
+			case "offerTags":
+				updated.OfferTags = patch.OfferTags
+			default:
+				// The ids are immutable and the state is output only.
+				return nil, badRequest("unknown or immutable update mask field %q", field)
+			}
+		}
+		if apiErr := validateOffer(updated); apiErr != nil {
+			return nil, apiErr
+		}
+		a.offers[key] = updated
+
+		return clone(updated), nil
+	case action == "" && r.Method == http.MethodDelete:
+		if !exists {
+			return nil, notFound("Offer not found: %s.", offerID)
+		}
+		// "Can only be done for draft offers."
+		if offer.State != "DRAFT" {
+			return nil, failedPrecondition("Offer %s is %s: only a draft offer can be deleted.", offerID, offer.State)
+		}
+		delete(a.offers, key)
+		a.retiredOffers[key] = true
+
+		return nil, nil
+	case action == "activate" && r.Method == http.MethodPost:
+		if !exists {
+			return nil, notFound("Offer not found: %s.", offerID)
+		}
+		offer.State = "ACTIVE"
+
+		return clone(offer), nil
+	case action == "deactivate" && r.Method == http.MethodPost:
+		if !exists {
+			return nil, notFound("Offer not found: %s.", offerID)
+		}
+		if offer.State != "ACTIVE" {
+			return nil, failedPrecondition("Offer %s is not active.", offerID)
+		}
+		offer.State = "INACTIVE"
+
+		return clone(offer), nil
+	}
+
+	return nil, notFound("unknown path %s %s", r.Method, r.URL.Path)
+}
+
+// createOffer stores a new draft offer on a base plan.
+func (a *app) createOffer(plan *androidpublisher.BasePlan, packageName, productID, basePlanID, offerID string,
+	offer *androidpublisher.SubscriptionOffer,
+) (any, *apiError) {
+	key := offerKey(productID, basePlanID, offerID)
+	if _, exists := a.offers[key]; exists {
+		return nil, conflict("Offer %s already exists.", offerID)
+	}
+	if a.retiredOffers[key] {
+		return nil, conflict("Offer id %s was used before and cannot be reused.", offerID)
+	}
+	// "Only auto-renewing base plans can have subscription offers."
+	if plan.AutoRenewingBasePlanType == nil {
+		return nil, failedPrecondition("Only auto-renewing base plans can have subscription offers.")
+	}
+	// The ids in the body "must be equal to" the ones in the path.
+	for _, pair := range [][2]string{
+		{offer.PackageName, packageName}, {offer.ProductId, productID},
+		{offer.BasePlanId, basePlanID}, {offer.OfferId, offerID},
+	} {
+		if pair[0] != "" && pair[0] != pair[1] {
+			return nil, badRequest("the offer names %s where the request names %s", pair[0], pair[1])
+		}
+	}
+	if apiErr := validateOffer(offer); apiErr != nil {
+		return nil, apiErr
+	}
+
+	offer.PackageName, offer.ProductId, offer.BasePlanId, offer.OfferId = packageName, productID, basePlanID, offerID
+	// State is output only: a new offer is a draft until activated.
+	offer.State = "DRAFT"
+	a.offers[key] = offer
+
+	return clone(offer), nil
+}
+
+// listOffers pages through the offers of a base plan, of a subscription (base
+// plan "-") or of the app (product and base plan "-"), 50 at a time unless
+// the request asks for up to 1000.
+func listOffers(r *http.Request, a *app, productID, basePlanID string) (any, *apiError) {
+	// "Must be specified as '-' if product_id is specified as '-'."
+	if productID == "-" && basePlanID != "-" {
+		return nil, badRequest("basePlanId must be - when productId is -")
+	}
+	if productID != "-" {
+		sub, exists := a.subscriptions[productID]
+		if !exists {
+			return nil, notFound("Subscription not found: %s.", productID)
+		}
+		if basePlanID != "-" && !slices.ContainsFunc(sub.BasePlans, func(p *androidpublisher.BasePlan) bool { return p.BasePlanId == basePlanID }) {
+			return nil, notFound("Base plan not found: %s.", basePlanID)
+		}
+	}
+
+	var keys []string
+	for key, offer := range a.offers {
+		if (productID == "-" || offer.ProductId == productID) && (basePlanID == "-" || offer.BasePlanId == basePlanID) {
+			keys = append(keys, key)
+		}
+	}
+	slices.Sort(keys)
+
+	page, next, apiErr := pageOf(r, len(keys))
+	if apiErr != nil {
+		return nil, apiErr
+	}
+
+	resp := &androidpublisher.ListSubscriptionOffersResponse{NextPageToken: next}
+	for _, key := range keys[page[0]:page[1]] {
+		resp.SubscriptionOffers = append(resp.SubscriptionOffers, clone(a.offers[key]))
+	}
+
+	return resp, nil
+}
+
+// pageOf reads pageSize and pageToken and returns the [start, end) of the page
+// within n items and the token of the next page, if any. The token is the
+// offset of the next page: opaque to a client.
+func pageOf(r *http.Request, n int) ([2]int, string, *apiError) {
+	query := r.URL.Query()
+
+	size := 50
+	if value := query.Get("pageSize"); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 0 {
+			return [2]int{}, "", badRequest("invalid pageSize %q", value)
+		}
+		if parsed > 0 {
+			size = min(parsed, 1000)
+		}
+	}
+
+	start := 0
+	if token := query.Get("pageToken"); token != "" {
+		parsed, err := strconv.Atoi(token)
+		if err != nil || parsed < 0 || parsed > n {
+			return [2]int{}, "", badRequest("invalid pageToken %q", token)
+		}
+		start = parsed
+	}
+
+	end := min(start+size, n)
+	next := ""
+	if end < n {
+		next = strconv.Itoa(end)
+	}
+
+	return [2]int{start, end}, next, nil
 }
 
 // --- one-time products -------------------------------------------------------

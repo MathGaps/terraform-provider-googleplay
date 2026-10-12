@@ -149,6 +149,7 @@ func (p *googlePlayProvider) Resources(_ context.Context) []func() resource.Reso
 		NewTrackResource,
 		NewTrackTestersResource,
 		NewSubscriptionResource,
+		NewSubscriptionOfferResource,
 		NewOneTimeProductResource,
 	}
 }
