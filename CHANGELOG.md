@@ -6,6 +6,21 @@ release notes, and refuses to release a version whose heading still says
     ## X.Y.Z (October 9, 2026)
 -->
 
+## Unreleased
+
+FEATURES:
+
+* **`googleplay_subscription_offer`.** A subscription offer on one
+  auto-renewing base plan: one or two phases (a free trial, a single payment
+  or discounted recurring payments), each priced per region as a price, an
+  absolute discount, a relative discount or free, and for regions Google Play
+  launches in later; acquisition or upgrade targeting, or none for a
+  developer-determined offer; offer tags; and a state reached through the
+  activate and deactivate calls. Changes are patched in place with an update
+  mask naming only what changed. A draft offer is deleted on destroy; one that
+  has been activated cannot be, and is deactivated and removed from state with
+  a warning. Import id: `package_name/product_id/base_plan_id/offer_id`.
+
 ## 0.1.1 (October 8, 2026)
 
 BUG FIXES:

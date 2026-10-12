@@ -246,9 +246,9 @@ func (r *subscriptionResource) Schema(_ context.Context, _ resource.SchemaReques
 			"error, so retire it with `state = \"INACTIVE\"` and keep it declared. A subscription can be deleted " +
 			"only if none of its base plans was ever activated: destroying one that cannot be deleted " +
 			"deactivates its active base plans, removes it from state with a warning, and leaves it in Play Console.\n\n" +
-			"Subscription offers (free trials, introductory prices) are not managed yet. Changing the price of " +
-			"a region changes it for new subscribers; moving existing subscribers to it (`migratePrices`) is " +
-			"not managed either.",
+			"Subscription offers (free trials, introductory prices) are the `googleplay_subscription_offer` " +
+			"resource. Changing the price of a region changes it for new subscribers; moving existing " +
+			"subscribers to it (`migratePrices`) is not managed.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				MarkdownDescription: "`{package_name}/{product_id}`.",

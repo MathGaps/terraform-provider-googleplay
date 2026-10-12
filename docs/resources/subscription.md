@@ -7,7 +7,7 @@ description: |-
   Base plans are part of this resource because that is how the API changes them: a base plan is created and edited by updating the subscription, and has no create or update call of its own. Only its state and its deletion have dedicated calls, and the provider makes them for you.
   The resource is authoritative for the subscription's base plans: one that exists in Play Console and not in the configuration is planned for removal.
   ~> What Google Play does not let you undo. A product id is reserved forever. A base plan can be deleted only while it is a draft: removing an active or inactive one from the configuration is an error, so retire it with state = "INACTIVE" and keep it declared. A subscription can be deleted only if none of its base plans was ever activated: destroying one that cannot be deleted deactivates its active base plans, removes it from state with a warning, and leaves it in Play Console.
-  Subscription offers (free trials, introductory prices) are not managed yet. Changing the price of a region changes it for new subscribers; moving existing subscribers to it (migratePrices) is not managed either.
+  Subscription offers (free trials, introductory prices) are the googleplay_subscription_offer resource. Changing the price of a region changes it for new subscribers; moving existing subscribers to it (migratePrices) is not managed.
 ---
 
 # googleplay_subscription (Resource)
@@ -20,7 +20,7 @@ The resource is authoritative for the subscription's base plans: one that exists
 
 ~> **What Google Play does not let you undo.** A product id is reserved forever. A base plan can be deleted only while it is a draft: removing an active or inactive one from the configuration is an error, so retire it with `state = "INACTIVE"` and keep it declared. A subscription can be deleted only if none of its base plans was ever activated: destroying one that cannot be deleted deactivates its active base plans, removes it from state with a warning, and leaves it in Play Console.
 
-Subscription offers (free trials, introductory prices) are not managed yet. Changing the price of a region changes it for new subscribers; moving existing subscribers to it (`migratePrices`) is not managed either.
+Subscription offers (free trials, introductory prices) are the `googleplay_subscription_offer` resource. Changing the price of a region changes it for new subscribers; moving existing subscribers to it (`migratePrices`) is not managed.
 
 ## Example Usage
 
