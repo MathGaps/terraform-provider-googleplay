@@ -423,14 +423,20 @@ func (r *subscriptionOfferResource) Create(ctx context.Context, req resource.Cre
 
 	state, err := r.readInto(ctx, plan)
 	if err != nil {
-		addAPIError(&resp.Diagnostics, "Unable to read the subscription offer after creating it", err)
+		// The offer id is taken for good, so the offer goes into state from the
+		// create response; the next refresh reads the rest.
+		created.PackageName, created.ProductId = desired.PackageName, desired.ProductId
+		created.BasePlanId, created.OfferId = desired.BasePlanId, desired.OfferId
+		state = flattenSubscriptionOffer(created, plan)
+		resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+		addCreatedWarning(&resp.Diagnostics, "Unable to read the subscription offer after creating it", err)
 
 		return
 	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 
 	if stateErr != nil {
-		addAPIError(&resp.Diagnostics, "Unable to set the state of the subscription offer", stateErr)
+		addCreatedWarning(&resp.Diagnostics, "Unable to set the state of the subscription offer", stateErr)
 	}
 }
 

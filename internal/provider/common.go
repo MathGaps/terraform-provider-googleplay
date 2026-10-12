@@ -79,6 +79,18 @@ func addAPIError(diags *diag.Diagnostics, summary string, err error) {
 	diags.AddError(summary, play.ErrorDetail(err))
 }
 
+// addCreatedWarning reports a step that failed after a create succeeded. It is
+// a warning, not an error, on purpose: Terraform taints an object whose create
+// returned any error and plans its replacement, and replacing a product or an
+// offer means creating its id again, which Google Play refuses forever. As a
+// warning the object stays in state as it is, and the next plan finishes what
+// this step did not as an ordinary update.
+func addCreatedWarning(diags *diag.Diagnostics, summary string, err error) {
+	diags.AddWarning(summary, play.ErrorDetail(err)+
+		"\n\nIt was created and is in state as it stands. The next plan shows what is left to do, "+
+		"and the next apply does it.")
+}
+
 // splitImportID splits an import id of exactly n non-empty slash-separated
 // parts.
 func splitImportID(id string, names ...string) ([]string, error) {

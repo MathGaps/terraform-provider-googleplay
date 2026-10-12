@@ -295,6 +295,38 @@ func TestSubscriptionResource_lifecycle(t *testing.T) {
 }
 
 // A subscription whose base plans were never activated is really deleted.
+// A subscription whose read after create fails stays in state, untainted: its
+// product id can never be used again, so one Terraform forgot -- or tainted and
+// planned to replace -- would have to be created a second time.
+func TestSubscriptionResource_readAfterCreateFails(t *testing.T) {
+	fake := newUnitFake(t)
+	fake.FailNext("GET", `/subscriptions/stranded$`, 403, "PERMISSION_DENIED")
+	config := subscriptionConfig(unitPackage, "stranded", "Stranded", "9.99", "DRAFT", "DRAFT", "")
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				// The read fails; the create is reported as a warning.
+				Config: config,
+			},
+			{
+				Config: config,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(subscriptionName, "product_id", "stranded"),
+					func(*terraform.State) error {
+						if creates := requestsMatching(fake, `^POST .*/subscriptions\?.*productId=stranded`); len(creates) != 1 {
+							return fmt.Errorf("the subscription was created %d times, want once: %v", len(creates), creates)
+						}
+
+						return nil
+					},
+				),
+			},
+		},
+	})
+}
+
 func TestSubscriptionResource_draftIsDeleted(t *testing.T) {
 	fake := newUnitFake(t)
 

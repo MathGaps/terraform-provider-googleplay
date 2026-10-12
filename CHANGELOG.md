@@ -21,6 +21,16 @@ FEATURES:
   has been activated cannot be, and is deactivated and removed from state with
   a warning. Import id: `package_name/product_id/base_plan_id/offer_id`.
 
+BUG FIXES:
+
+* **A product or offer whose read after create fails stays in state, untainted.** A failure after
+  the create succeeded -- reading it back, or moving a base plan, purchase option or offer to the
+  state configured -- was an error, and Terraform taints an object whose create returns one and
+  plans its replacement. Replacing it means creating its id again, which Google Play refuses
+  forever. These are now warnings: `googleplay_subscription`, `googleplay_one_time_product` and
+  `googleplay_subscription_offer` keep what was created in state, and the next apply finishes the
+  job as an ordinary update.
+
 ## 0.1.1 (October 8, 2026)
 
 BUG FIXES:

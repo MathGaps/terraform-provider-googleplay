@@ -128,5 +128,4 @@ one (rather than with a rule the server picks); that `targeting` holds one rule,
 never both; that a patch may change the phases and targeting of an offer that
 has been activated; that a deleted draft offer's id is refused when used
 again, as Play Console's help says; and that the offer id has no format rule
-beyond the base plan's (the API documents none, so the provider only refuses a
-slash).
+(the API documents none, so the provider refuses only slashes and whitespace).

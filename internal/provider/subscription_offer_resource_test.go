@@ -263,6 +263,40 @@ func TestSubscriptionOfferResource_activeIsRetired(t *testing.T) {
 	})
 }
 
+// An offer whose read after create fails stays in state, untainted: its id can
+// never be used again, so an offer Terraform forgot -- or tainted and planned to
+// replace -- would have to be created a second time, which Google Play refuses.
+func TestSubscriptionOfferResource_readAfterCreateFails(t *testing.T) {
+	fake := newUnitFake(t)
+	putOfferSubscription(fake, "pro")
+	fake.FailNext("GET", `/offers/stranded$`, 403, "PERMISSION_DENIED")
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				// The read fails; the create is reported as a warning.
+				Config: offerConfig("stranded", "DRAFT", "4.50", ""),
+			},
+			{
+				// The same configuration again: a forgotten or tainted offer would
+				// be created a second time, and the fake refuses a taken id.
+				Config: offerConfig("stranded", "DRAFT", "4.50", ""),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr(offerName, "id", unitPackage+"/pro/monthly/stranded"),
+					func(*terraform.State) error {
+						if creates := requestsMatching(fake, `^POST .*/offers\?.*offerId=stranded`); len(creates) != 1 {
+							return fmt.Errorf("the offer was created %d times, want once: %v", len(creates), creates)
+						}
+
+						return nil
+					},
+				),
+			},
+		},
+	})
+}
+
 // A draft offer is really deleted, and its id cannot be used again.
 func TestSubscriptionOfferResource_draftIsDeleted(t *testing.T) {
 	fake := newUnitFake(t)

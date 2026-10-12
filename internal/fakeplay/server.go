@@ -19,6 +19,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -39,6 +40,8 @@ type Server struct {
 	apps     map[string]*app
 	requests []string
 	nextEdit int
+	// failures are the one-shot errors armed by FailNext, in arming order.
+	failures []failure
 
 	// Expansions maps a permission to the permissions the server stores in
 	// its place, for app-level and account-level permissions alike. It starts
@@ -63,6 +66,29 @@ type app struct {
 // offerKey identifies an offer within an app.
 func offerKey(productID, basePlanID, offerID string) string {
 	return productID + "/" + basePlanID + "/" + offerID
+}
+
+// failure is one request FailNext arms to be answered with an error.
+type failure struct {
+	method string
+	path   *regexp.Regexp
+	err    *apiError
+}
+
+// FailNext makes the next request with this method whose path matches
+// pathPattern answer with code and status instead of being served, once. It
+// stands in for what a test cannot otherwise provoke: a call that fails after
+// an earlier one in the same operation succeeded. A 429 or 5xx is retried by
+// the client, so use a status it gives up on.
+func (s *Server) FailNext(method, pathPattern string, code int, status string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.failures = append(s.failures, failure{
+		method: method,
+		path:   regexp.MustCompile(pathPattern),
+		err:    &apiError{code, status, "failure armed by the test"},
+	})
 }
 
 // edit is a private copy of the app's tracks and testers.
@@ -266,7 +292,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, apiErr := s.route(r, body)
+	var result any
+	apiErr := s.armedFailure(r)
+	if apiErr == nil {
+		result, apiErr = s.route(r, body)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	if apiErr != nil {
@@ -286,6 +316,19 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		result = struct{}{}
 	}
 	_ = json.NewEncoder(w).Encode(result)
+}
+
+// armedFailure takes the first failure FailNext armed for this request.
+func (s *Server) armedFailure(r *http.Request) *apiError {
+	for i, f := range s.failures {
+		if f.method == r.Method && f.path.MatchString(r.URL.Path) {
+			s.failures = slices.Delete(s.failures, i, i+1)
+
+			return f.err
+		}
+	}
+
+	return nil
 }
 
 func decode[T any](body []byte) (*T, *apiError) {
