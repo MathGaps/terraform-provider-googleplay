@@ -78,7 +78,7 @@ track, and an edit committed by one run invalidates the other's.
 | `TestAccSubscriptionResource_basic` | A subscription `tfacc_sub_<random>` with one draft base plan | Deleted. **The product id stays reserved** |
 | `TestAccSubscriptionOfferResource_basic` | A subscription `tfacc_offer_<random>` with one draft auto-renewing base plan, and a draft free-trial offer `trial` on it | Both deleted, the offer first. **The product id stays reserved**, and so, by Play Console's help, does the offer id |
 | `TestAccOneTimeProductResource_basic` | A one-time product `tfacc_otp_<random>` with one draft purchase option | Deleted. **The product id stays reserved** |
-| `TestAccTracksDataSource_basic`, `TestAccConvertedRegionPricesDataSource_basic` | Nothing | Nothing |
+| `TestAccTracksDataSource_basic`, `TestAccConvertedRegionPricesDataSource_basic`, `TestAccSubscriptionsDataSource_basic` | Nothing | Nothing |
 
 ## What cannot be undone
 

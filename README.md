@@ -41,6 +41,7 @@ that you fill from the [GitHub releases](https://github.com/MathGaps/terraform-p
 |---|---|
 | [`googleplay_users`](docs/data-sources/users.md) | Every user of the developer account, with permissions and per-app grants |
 | [`googleplay_tracks`](docs/data-sources/tracks.md) | The tracks of an app and the releases on them |
+| [`googleplay_subscriptions`](docs/data-sources/subscriptions.md) | The subscriptions of an app, with their base plans and offer ids |
 | [`googleplay_converted_region_prices`](docs/data-sources/converted_region_prices.md) | One price converted into the price of every region |
 
 ## What it does not manage
@@ -119,7 +120,7 @@ provider "googleplay" {
    |---|---|
    | `googleplay_user`, `googleplay_app_grant` | Admin (all permissions) on the account |
    | `googleplay_track`, `googleplay_track_testers` | Release apps to testing tracks, and Manage testing tracks and edit tester lists |
-   | `googleplay_subscription`, `googleplay_subscription_offer`, `googleplay_one_time_product`, `googleplay_converted_region_prices` | Manage store presence |
+   | `googleplay_subscription`, `googleplay_subscription_offer`, `googleplay_one_time_product`, `googleplay_converted_region_prices`, `googleplay_subscriptions` | Manage store presence |
    | `googleplay_tracks` | View app information |
 
    Google does not publish which permission each API method checks, so treat

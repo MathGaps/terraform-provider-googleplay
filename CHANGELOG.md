@@ -21,6 +21,14 @@ FEATURES:
   has been activated cannot be, and is deactivated and removed from state with
   a warning. Import id: `package_name/product_id/base_plan_id/offer_id`.
 
+* **`googleplay_subscriptions` data source.** Every subscription of an app,
+  ordered by product id, with its titles, its base plans (id, state, kind and
+  billing period) and the id and state of each base plan's offers, for finding
+  the ids a configuration refers to and writing import blocks. A read follows
+  every page of `subscriptions.list`, then lists every offer of the app in one
+  paged `offers.list` across all subscriptions; it never reads an offer one by
+  one.
+
 BUG FIXES:
 
 * **A product or offer whose read after create fails stays in state, untainted.** A failure after

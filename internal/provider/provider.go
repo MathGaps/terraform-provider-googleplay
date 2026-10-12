@@ -158,6 +158,7 @@ func (p *googlePlayProvider) DataSources(_ context.Context) []func() datasource.
 	return []func() datasource.DataSource{
 		NewUsersDataSource,
 		NewTracksDataSource,
+		NewSubscriptionsDataSource,
 		NewConvertedRegionPricesDataSource,
 	}
 }
